@@ -48,7 +48,7 @@ async def create_item(
     logger.info(f"Creating item for tenant: {tenant['id']}")
     logger.info(f"Item data: {data}")
 
-    item_data = data.model_dump()
+    item_data = data.model_dump(exclude={'id'})
     item_data["tenant_id"] = tenant["id"]
     item_data["search_text"] = f"{data.name} {data.description or ''}"
     
