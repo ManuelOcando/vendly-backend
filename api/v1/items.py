@@ -43,17 +43,30 @@ async def create_item(
 ):
     """Crear un producto o servicio."""
     db = get_supabase_client()
+    
+    logger = logging.getLogger(__name__)
+    logger.info(f"Creating item for tenant: {tenant['id']}")
+    logger.info(f"Item data: {data}")
 
     item_data = data.model_dump()
     item_data["tenant_id"] = tenant["id"]
     item_data["search_text"] = f"{data.name} {data.description or ''}"
+    
+    logger.info(f"Final item data for insert: {item_data}")
 
-    result = db.table("items").insert(item_data).execute()
+    try:
+        result = db.table("items").insert(item_data).execute()
+        logger.info(f"Insert result: {result}")
+        
+        if not result.data or len(result.data) == 0:
+            logger.error("Insert returned no data")
+            raise HTTPException(status_code=500, detail="Error al crear el producto")
 
-    if not result.data or len(result.data) == 0:
-        raise HTTPException(status_code=500, detail="Error al crear el producto")
-
-    return result.data[0]
+        return result.data[0]
+    except Exception as e:
+        logger.error(f"Database error during item creation: {str(e)}")
+        logger.error(f"Error details: {type(e).__name__}")
+        raise HTTPException(status_code=500, detail=f"Error de base de datos: {str(e)}")
 
 
 @router.get("/{item_id}", response_model=ItemResponse)
