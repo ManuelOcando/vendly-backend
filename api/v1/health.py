@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from db.supabase import get_supabase_client
 from db.redis import get_redis_client
 from config import get_settings
@@ -13,7 +13,7 @@ router = APIRouter()
 
 @router.get("/health")
 @limiter.limit("100/minute")
-async def health_check():
+async def health_check(request: Request):
     """Verifica que el servidor está funcionando."""
     settings = get_settings()
     
