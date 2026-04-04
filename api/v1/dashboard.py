@@ -188,28 +188,32 @@ async def get_whatsapp_status(
     tenant: dict = Depends(get_current_tenant)
 ):
     """Obtener estado de conexión WhatsApp."""
-    db = get_supabase_client()
-    
-    result = db.table("whatsapp_connections").select("*").eq(
-        "tenant_id", tenant["id"]
-    ).execute()
-    
-    if not result.data:
-        return {"connected": False, "connections": []}
-    
-    connections = result.data
-    active_connection = None
-    
-    for conn in connections:
-        if conn["status"] == "connected":
-            active_connection = conn
-            break
-    
-    return {
-        "connected": active_connection is not None,
-        "active_connection": active_connection,
-        "all_connections": connections
-    }
+    try:
+        db = get_supabase_client()
+        
+        result = db.table("whatsapp_connections").select("*").eq(
+            "tenant_id", tenant["id"]
+        ).execute()
+        
+        if not result.data:
+            return {"connected": False, "connections": []}
+        
+        connections = result.data
+        active_connection = None
+        
+        for conn in connections:
+            if conn["status"] == "connected":
+                active_connection = conn
+                break
+        
+        return {
+            "connected": active_connection is not None,
+            "active_connection": active_connection,
+            "all_connections": connections
+        }
+    except Exception as e:
+        # Si la tabla no existe, retornar desconectado sin error
+        return {"connected": False, "connections": [], "error": str(e)}
 
 
 @router.post("/whatsapp/connect")
