@@ -17,7 +17,6 @@ class ItemCreate(BaseModel):
     is_active: bool = Field(default=True)
     is_featured: bool = Field(default=False)
     images: List[str] = Field(default=[])
-    metadata: Optional[dict] = Field(default={})
 
 
 class ItemUpdate(BaseModel):
@@ -34,7 +33,6 @@ class ItemUpdate(BaseModel):
     is_active: Optional[bool] = None
     is_featured: Optional[bool] = None
     images: Optional[List[str]] = None
-    metadata: Optional[dict] = None
 
 
 class StockUpdate(BaseModel):
@@ -58,7 +56,6 @@ class ItemResponse(BaseModel):
     is_active: bool = True
     is_featured: bool = False
     images: Optional[List[str]] = []
-    metadata: Optional[dict] = {}
     total_sold: int = 0
     likes_count: int = 0
     created_at: Optional[str] = None
