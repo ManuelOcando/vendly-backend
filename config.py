@@ -1,17 +1,18 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+import os
 
 
 class Settings(BaseSettings):
     # App
     APP_NAME: str = "Vendly API"
     APP_VERSION: str = "0.1.0"
-    DEBUG: bool = True
+    DEBUG: bool = False
     
     # Supabase
-    SUPABASE_URL: str = "https://slspihwznliibdecdtkj.supabase.co"
-    SUPABASE_ANON_KEY: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsc3BpaHd6bmxpaWJkZWNkdGtqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUxMTExNzEsImV4cCI6MjA5MDY4NzE3MX0.fmHZDgs9YSoQCJ8anlIh1kxtrltu_5olZvBnpYTSejE"
-    SUPABASE_SERVICE_ROLE_KEY: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsc3BpaHd6bmxpaWJkZWNkdGtqIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NTExMTE3MSwiZXhwIjoyMDkwNjg3MTcxfQ.WGJpRFZV7DEA_vWfalZ45t2OMU0iDnTrKXOobePWfn0"
+    SUPABASE_URL: str = ""
+    SUPABASE_ANON_KEY: str = ""
+    SUPABASE_SERVICE_ROLE_KEY: str = ""
     
     # Redis (Upstash)
     UPSTASH_REDIS_URL: str = ""
@@ -36,6 +37,30 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         extra = "allow"
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.validate_required_settings()
+    
+    def validate_required_settings(self):
+        """Validate that required settings are present for production"""
+        if not self.DEBUG:
+            required_vars = [
+                "SUPABASE_URL",
+                "SUPABASE_ANON_KEY", 
+                "SUPABASE_SERVICE_ROLE_KEY",
+                "FRONTEND_URL"
+            ]
+            
+            missing_vars = []
+            for var in required_vars:
+                if not getattr(self, var):
+                    missing_vars.append(var)
+            
+            if missing_vars:
+                raise ValueError(
+                    f"Missing required environment variables for production: {', '.join(missing_vars)}"
+                )
 
 
 @lru_cache()
