@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+import logging
 from api.deps import get_current_tenant
 from db.supabase import get_supabase_client
 from models.item import ItemCreate, ItemUpdate, ItemResponse, StockUpdate
