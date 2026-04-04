@@ -48,7 +48,8 @@ app.add_middleware(
         settings.FRONTEND_URL,
         "http://localhost:3000",
         "https://*.vendly.app",
-        "https://*.vercel.app"
+        "https://*.vercel.app",
+        "https://vendly-frontend.vercel.app"
     ],
     allow_credentials=True,
     allow_methods=["*"],
