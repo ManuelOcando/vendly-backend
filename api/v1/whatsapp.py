@@ -1,12 +1,16 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Request, Depends
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import httpx
 import json
 from datetime import datetime
 from config import get_settings
+import logging
+
+from api.deps import get_current_tenant
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Evolution API configuration
 settings = get_settings()
@@ -95,54 +99,104 @@ async def send_whatsapp_message(message: WhatsAppMessage):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/webhook")
-async def whatsapp_webhook(webhook_data: WebhookMessage, background_tasks: BackgroundTasks):
-    """Webhook para recibir mensajes de Evolution API"""
-    
+async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Webhook para recibir mensajes de Evolution API - Multi-tenant"""
     try:
-        # Procesar mensaje entrante
-        message_type = webhook_data.message.get("messageType", "")
-        sender = webhook_data.senderData.get("sender", "")
-        instance_id = webhook_data.instance
+        data = await request.json()
+        logger.info(f"Webhook received: {data}")
         
-        if message_type == "textMessage":
-            message_text = webhook_data.message.get("textMessage", {}).get("text", "")
+        # Extraer instance del webhook para identificar tenant
+        instance = data.get("instance", "")
+        event = data.get("event")
+        
+        # Buscar tenant por instance_name
+        from db.supabase import get_supabase_client
+        db = get_supabase_client()
+        result = db.table("whatsapp_configs").select("tenant_id").eq("instance_name", instance).execute()
+        
+        if not result.data:
+            logger.warning(f"No tenant found for instance: {instance}")
+            return {"status": "ignored", "reason": "unknown_instance"}
+        
+        tenant_id = result.data[0]["tenant_id"]
+        
+        if event == "messages.upsert":
+            message_data = data.get("data", {})
+            message = message_data.get("message", {})
             
-            # Agregar procesamiento en background usando el servicio del bot
-            from services.whatsapp_bot import bot_service
-            background_tasks.add_task(
-                bot_service.process_message,
-                sender,
-                message_text,
-                instance_id
-            )
+            if message.get("conversation"):
+                phone = message_data.get("key", {}).get("remoteJid", "").split("@")[0]
+                text = message.get("conversation")
+                
+                logger.info(f"Message from {phone} to tenant {tenant_id}: {text}")
+                
+                # Procesar mensaje con bot del tenant
+                background_tasks.add_task(
+                    process_tenant_message,
+                    tenant_id,
+                    phone,
+                    text
+                )
+                
+        elif event == "connection.update":
+            state = data.get("data", {}).get("state")
+            logger.info(f"Connection state for {tenant_id}: {state}")
+            
+            # Actualizar estado en DB
+            db.table("whatsapp_configs").update({
+                "is_connected": state == "OPEN",
+                "updated_at": datetime.now().isoformat()
+            }).eq("tenant_id", tenant_id).execute()
         
-        return {"status": "received"}
-        
+        return {"status": "ok"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Webhook error: {e}")
+        return {"status": "error", "message": str(e)}
+
+async def process_tenant_message(tenant_id: str, phone: str, text: str):
+    """Procesar mensaje para un tenant específico"""
+    from services.whatsapp_bot import bot_service
+    await bot_service.process_message(tenant_id, phone, text)
 
 @router.get("/health")
-async def get_whatsapp_health():
-    """Verificar estado de Evolution API y conexión WhatsApp"""
-    from services.whatsapp.evolution_service import evolution_service
+async def get_whatsapp_health(tenant: dict = Depends(get_current_tenant)):
+    """Verificar estado de WhatsApp para el tenant actual"""
+    from db.supabase import get_supabase_client
+    from services.whatsapp.evolution_service import TenantEvolutionService
     
-    evolution_health = evolution_service.health_check()
-    connection_status = evolution_service.get_connection_status()
+    db = get_supabase_client()
+    
+    # Obtener config del tenant
+    result = db.table("whatsapp_configs").select("*").eq("tenant_id", tenant["id"]).execute()
+    
+    if not result.data:
+        return {
+            "configured": False,
+            "message": "WhatsApp no configurado. Sigue la guía de setup."
+        }
+    
+    config = result.data[0]
+    
+    # Crear servicio para este tenant
+    service = TenantEvolutionService(
+        tenant_id=tenant["id"],
+        evolution_url=config["evolution_api_url"],
+        api_key=config["evolution_api_key"],
+        instance_name=config["instance_name"]
+    )
+    
+    evolution_health = service.health_check()
+    connection_status = service.get_connection_status()
     
     is_connected = connection_status.get("state") == "OPEN"
-    needs_qr = not is_connected and evolution_health.get("status") == "online"
-    
-    # Log warning if disconnected
-    if not is_connected:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.warning(f"WhatsApp bot disconnected! Status: {connection_status}")
     
     return {
+        "configured": True,
         "evolution_api": evolution_health,
         "whatsapp_connection": connection_status,
         "bot_status": "connected" if is_connected else "disconnected",
-        "needs_qr": needs_qr,
+        "needs_qr": not is_connected and evolution_health.get("status") == "online",
+        "instance": config["instance_name"],
         "timestamp": datetime.now().isoformat()
     }
 
