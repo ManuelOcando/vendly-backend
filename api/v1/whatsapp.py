@@ -237,3 +237,129 @@ async def disconnect_whatsapp(instance_id: str):
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+class WhatsAppConfigRequest(BaseModel):
+    evolution_api_url: str
+    evolution_api_key: str
+    instance_name: str = "vendly-bot"
+    phone_number: str = ""
+
+@router.get("/config")
+async def get_whatsapp_config(tenant: dict = Depends(get_current_tenant)):
+    """Obtener configuración de WhatsApp del tenant"""
+    from db.supabase import get_supabase_client
+    from services.whatsapp.evolution_service import TenantEvolutionService
+    
+    db = get_supabase_client()
+    
+    # Obtener config
+    result = db.table("whatsapp_configs").select("*").eq("tenant_id", tenant["id"]).execute()
+    
+    config = result.data[0] if result.data else None
+    
+    # Obtener health status
+    health = None
+    if config:
+        service = TenantEvolutionService(
+            tenant_id=tenant["id"],
+            evolution_url=config["evolution_api_url"],
+            api_key=config["evolution_api_key"],
+            instance_name=config["instance_name"]
+        )
+        
+        evolution_health = service.health_check()
+        connection_status = service.get_connection_status()
+        is_connected = connection_status.get("state") == "OPEN"
+        
+        health = {
+            "configured": True,
+            "bot_status": "connected" if is_connected else "disconnected",
+            "needs_qr": not is_connected and evolution_health.get("status") == "online",
+            "evolution_api": evolution_health,
+            "whatsapp_connection": connection_status
+        }
+    else:
+        health = {"configured": False}
+    
+    return {
+        "config": config,
+        "health": health
+    }
+
+@router.post("/config")
+async def save_whatsapp_config(
+    data: WhatsAppConfigRequest,
+    tenant: dict = Depends(get_current_tenant)
+):
+    """Guardar configuración de WhatsApp del tenant"""
+    from db.supabase import get_supabase_client
+    
+    db = get_supabase_client()
+    
+    # Verificar si ya existe
+    existing = db.table("whatsapp_configs").select("id").eq("tenant_id", tenant["id"]).execute()
+    
+    config_data = {
+        "tenant_id": tenant["id"],
+        "evolution_api_url": data.evolution_api_url.rstrip("/"),
+        "evolution_api_key": data.evolution_api_key,
+        "instance_name": data.instance_name,
+        "phone_number": data.phone_number,
+        "updated_at": datetime.now().isoformat()
+    }
+    
+    if existing.data:
+        # Actualizar
+        result = db.table("whatsapp_configs").update(config_data).eq("tenant_id", tenant["id"]).execute()
+    else:
+        # Crear nuevo
+        config_data["created_at"] = datetime.now().isoformat()
+        result = db.table("whatsapp_configs").insert(config_data).execute()
+    
+    return {
+        "status": "success",
+        "message": "Configuración guardada",
+        "config": result.data[0] if result.data else None
+    }
+
+@router.get("/qr")
+async def get_whatsapp_qr(tenant: dict = Depends(get_current_tenant)):
+    """Obtener código QR para escanear WhatsApp"""
+    from db.supabase import get_supabase_client
+    from services.whatsapp.evolution_service import TenantEvolutionService
+    
+    db = get_supabase_client()
+    
+    # Obtener config
+    result = db.table("whatsapp_configs").select("*").eq("tenant_id", tenant["id"]).execute()
+    
+    if not result.data:
+        raise HTTPException(status_code=404, detail="WhatsApp no configurado")
+    
+    config = result.data[0]
+    
+    # Crear servicio y obtener QR
+    service = TenantEvolutionService(
+        tenant_id=tenant["id"],
+        evolution_url=config["evolution_api_url"],
+        api_key=config["evolution_api_key"],
+        instance_name=config["instance_name"]
+    )
+    
+    # Intentar conectar primero
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{config['evolution_api_url']}/instance/connect/{config['instance_name']}",
+                headers={"apikey": config["evolution_api_key"]}
+            )
+    except:
+        pass  # Puede que ya esté conectado
+    
+    # Obtener QR
+    qr = service.get_qr_code()
+    
+    if not qr:
+        raise HTTPException(status_code=404, detail="QR no disponible. El bot ya está conectado o no responde.")
+    
+    return {"qr_base64": qr}
