@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from api.v1 import health, auth, items, categories, dashboard, storefront, orders, whatsapp, cart, customers, tenants
+from api.v1 import health, auth, items, categories, dashboard, storefront, orders, whatsapp, cart, customers, tenants, upload
 
 router = APIRouter(prefix="/api/v1")
 
@@ -15,3 +15,4 @@ router.include_router(whatsapp.router, tags=["WhatsApp"])
 router.include_router(cart.router, tags=["Cart"])
 router.include_router(customers.router, tags=["Customers"])
 router.include_router(tenants.router, tags=["Tenants"])
+router.include_router(upload.router, tags=["Upload"])
