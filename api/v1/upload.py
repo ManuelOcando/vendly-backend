@@ -4,12 +4,15 @@ from db.supabase import get_supabase_client
 from typing import List
 import uuid
 import mimetypes
+import logging
 
 router = APIRouter(prefix="/upload")
 
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "image/jpg"}
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
 MAX_IMAGES_PER_PRODUCT = 5
+
+logger = logging.getLogger(__name__)
 
 
 @router.post("/images")
@@ -24,6 +27,8 @@ async def upload_images(
     """
     db = get_supabase_client()
     tenant_id = tenant["id"]
+    
+    logger.info(f"Upload request: {len(files)} files, product_id={product_id}, tenant={tenant_id}")
     
     uploaded_urls = []
     errors = []
@@ -55,13 +60,17 @@ async def upload_images(
             storage_path = f"products/{tenant_id}/{product_id}/{unique_name}"
             
             # Subir a Supabase Storage
+            logger.info(f"Uploading to bucket 'vendly-uploads', path: {storage_path}")
             result = db.storage.from_("vendly-uploads").upload(
                 storage_path,
                 content,
                 {"content-type": content_type}
             )
             
+            logger.info(f"Upload result type: {type(result)}, value: {result}")
+            
             if hasattr(result, 'error') and result.error:
+                logger.error(f"Storage error for {file.filename}: {result.error}")
                 errors.append(f"{file.filename}: Error de storage - {result.error}")
                 continue
             
@@ -70,6 +79,7 @@ async def upload_images(
             uploaded_urls.append(public_url)
             
         except Exception as e:
+            logger.exception(f"Error uploading {file.filename}")
             errors.append(f"{file.filename}: {str(e)}")
     
     return {
