@@ -121,27 +121,30 @@ async def whatsapp_webhook(webhook_data: WebhookMessage, background_tasks: Backg
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/status/{instance_id}")
-async def get_whatsapp_status(instance_id: str):
-    """Verificar estado de conexión WhatsApp"""
+@router.get("/health")
+async def get_whatsapp_health():
+    """Verificar estado de Evolution API y conexión WhatsApp"""
+    from services.whatsapp.evolution_service import evolution_service
     
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{EVOLUTION_API_URL}/instance/connectionState/{instance_id}",
-                headers={"apikey": EVOLUTION_API_KEY}
-            )
-            
-            if response.status_code != 200:
-                raise HTTPException(
-                    status_code=404,
-                    detail="Instance not found"
-                )
-            
-            return response.json()
-            
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    evolution_health = evolution_service.health_check()
+    connection_status = evolution_service.get_connection_status()
+    
+    is_connected = connection_status.get("state") == "OPEN"
+    needs_qr = not is_connected and evolution_health.get("status") == "online"
+    
+    # Log warning if disconnected
+    if not is_connected:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"WhatsApp bot disconnected! Status: {connection_status}")
+    
+    return {
+        "evolution_api": evolution_health,
+        "whatsapp_connection": connection_status,
+        "bot_status": "connected" if is_connected else "disconnected",
+        "needs_qr": needs_qr,
+        "timestamp": datetime.now().isoformat()
+    }
 
 async def process_whatsapp_message(sender: str, message: str, instance_id: str):
     """Función obsoleta - usar WhatsAppBotService en su lugar"""

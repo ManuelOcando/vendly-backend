@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     # WhatsApp (Evolution API)
     EVOLUTION_API_URL: str = "http://localhost:8080"
     EVOLUTION_API_KEY: str = ""
+    EVOLUTION_INSTANCE_NAME: str = "vendly-bot"
+    BACKEND_URL: str = "https://vendly-backend-uuos.onrender.com"
     
     # LLM (Gemini)
     GEMINI_API_KEY: str = ""
