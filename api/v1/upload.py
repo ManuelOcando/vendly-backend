@@ -14,6 +14,28 @@ MAX_IMAGES_PER_PRODUCT = 5
 
 logger = logging.getLogger(__name__)
 
+BUCKET_NAME = "vendly-uploads"
+
+
+def ensure_bucket_exists(db):
+    """Crear bucket si no existe"""
+    try:
+        # Verificar si bucket existe
+        buckets = db.storage.list_buckets()
+        bucket_names = [b.name for b in buckets]
+        
+        if BUCKET_NAME not in bucket_names:
+            logger.info(f"Creating bucket: {BUCKET_NAME}")
+            db.storage.create_bucket(
+                BUCKET_NAME,
+                options={"public": True}
+            )
+            logger.info(f"Bucket {BUCKET_NAME} created successfully")
+        return True
+    except Exception as e:
+        logger.error(f"Error ensuring bucket exists: {e}")
+        return False
+
 
 @router.post("/images")
 async def upload_images(
@@ -29,6 +51,10 @@ async def upload_images(
     tenant_id = tenant["id"]
     
     logger.info(f"Upload request: {len(files)} files, product_id={product_id}, tenant={tenant_id}")
+    
+    # Asegurar que el bucket existe
+    if not ensure_bucket_exists(db):
+        raise HTTPException(status_code=500, detail="Error configurando storage")
     
     uploaded_urls = []
     errors = []
@@ -60,8 +86,8 @@ async def upload_images(
             storage_path = f"products/{tenant_id}/{product_id}/{unique_name}"
             
             # Subir a Supabase Storage
-            logger.info(f"Uploading to bucket 'vendly-uploads', path: {storage_path}")
-            result = db.storage.from_("vendly-uploads").upload(
+            logger.info(f"Uploading to bucket '{BUCKET_NAME}', path: {storage_path}")
+            result = db.storage.from_(BUCKET_NAME).upload(
                 storage_path,
                 content,
                 {"content-type": content_type}
@@ -75,7 +101,7 @@ async def upload_images(
                 continue
             
             # Obtener URL pública
-            public_url = db.storage.from_("vendly-uploads").get_public_url(storage_path)
+            public_url = db.storage.from_(BUCKET_NAME).get_public_url(storage_path)
             uploaded_urls.append(public_url)
             
         except Exception as e:
@@ -101,8 +127,8 @@ async def delete_image(
     
     try:
         # Extraer path de la URL
-        # URL format: .../storage/v1/object/public/vendly-uploads/products/{tenant_id}/...
-        path_parts = image_url.split("/vendly-uploads/")
+        # URL format: .../storage/v1/object/public/{BUCKET_NAME}/products/{tenant_id}/...
+        path_parts = image_url.split(f"/{BUCKET_NAME}/")
         if len(path_parts) < 2:
             raise HTTPException(status_code=400, detail="URL inválida")
         
@@ -113,7 +139,7 @@ async def delete_image(
             raise HTTPException(status_code=403, detail="No autorizado para eliminar esta imagen")
         
         # Eliminar de storage
-        result = db.storage.from_("vendly-uploads").remove([storage_path])
+        result = db.storage.from_(BUCKET_NAME).remove([storage_path])
         
         if hasattr(result, 'error') and result.error:
             raise HTTPException(status_code=500, detail=f"Error eliminando: {result.error}")
