@@ -18,8 +18,11 @@ class Settings(BaseSettings):
     UPSTASH_REDIS_URL: str = ""
     UPSTASH_REDIS_TOKEN: str = ""
     
-    # WhatsApp (Evolution API)
-    EVOLUTION_API_URL: str = "http://localhost:8080"
+    # WhatsApp (Baileys Service)
+    BAILEYS_SERVICE_URL: str = "https://vendly-baileys.up.railway.app"
+    
+    # Legacy (for backward compatibility)
+    EVOLUTION_API_URL: str = ""
     EVOLUTION_API_KEY: str = ""
     EVOLUTION_INSTANCE_NAME: str = "vendly-bot"
     BACKEND_URL: str = "https://vendly-backend-uuos.onrender.com"

@@ -5,20 +5,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-class EvolutionAPIService:
-    def __init__(self):
-        self.base_url = os.getenv("EVOLUTION_API_URL", "https://vendly-evolution.onrender.com")
-        self.api_key = os.getenv("EVOLUTION_API_KEY", "")
-        self.instance_name = os.getenv("EVOLUTION_INSTANCE_NAME", "vendly-bot")
-        
-    def _headers(self) -> Dict[str, str]:
-        return {
-            "apikey": self.api_key,
-            "Content-Type": "application/json"
-        }
+class BaileysService:
+    """Servicio para comunicarse con Vendly Baileys (Node.js multi-tenant WhatsApp)"""
     
+    def __init__(self):
+        self.base_url = os.getenv("BAILEYS_SERVICE_URL", "https://vendly-baileys.up.railway.app")
+        
     def health_check(self) -> Dict[str, Any]:
-        """Verificar si Evolution API está activo"""
+        """Verificar si servicio Baileys está activo"""
         try:
             response = requests.get(
                 f"{self.base_url}/health",
@@ -26,67 +20,66 @@ class EvolutionAPIService:
             )
             return {
                 "status": "online" if response.status_code == 200 else "error",
-                "code": response.status_code
+                "code": response.status_code,
+                "data": response.json() if response.status_code == 200 else None
             }
         except Exception as e:
-            logger.error(f"Evolution API health check failed: {e}")
+            logger.error(f"Baileys health check failed: {e}")
             return {"status": "offline", "error": str(e)}
     
-    def create_instance(self) -> Dict[str, Any]:
-        """Crear instancia de WhatsApp"""
+    def create_session(self, tenant_id: str, phone_number: str = None) -> Dict[str, Any]:
+        """Crear sesión de WhatsApp para un tenant"""
         try:
             response = requests.post(
-                f"{self.base_url}/instance/create",
-                headers=self._headers(),
+                f"{self.base_url}/session/create",
                 json={
-                    "instanceName": self.instance_name,
-                    "token": os.getenv("EVOLUTION_INSTANCE_TOKEN", "vendly-token"),
-                    "qrcode": True,
-                    "number": "",
-                    "webhook": {
-                        "url": f"{os.getenv('BACKEND_URL', 'https://vendly-backend-uuos.onrender.com')}/webhook/whatsapp",
-                        "enabled": True,
-                        "events": ["messages.upsert", "connection.update"]
-                    }
+                    "tenant_id": tenant_id,
+                    "phone_number": phone_number
                 },
                 timeout=30
             )
             return response.json()
         except Exception as e:
-            logger.error(f"Failed to create instance: {e}")
+            logger.error(f"Failed to create session: {e}")
             return {"error": str(e)}
     
-    def get_qr_code(self) -> Optional[str]:
+    def get_qr_code(self, tenant_id: str) -> Optional[str]:
         """Obtener QR para escanear"""
         try:
             response = requests.get(
-                f"{self.base_url}/instance/connect/{self.instance_name}",
-                headers=self._headers(),
+                f"{self.base_url}/session/qr/{tenant_id}",
                 timeout=10
             )
             data = response.json()
-            if "qrcode" in data and data["qrcode"]:
-                return data["qrcode"]["base64"]  # QR en base64
-            return None
+            return data.get("qr_base64")
         except Exception as e:
             logger.error(f"Failed to get QR: {e}")
             return None
     
-    def get_connection_status(self) -> Dict[str, Any]:
+    def get_connection_status(self, tenant_id: str) -> Dict[str, Any]:
         """Verificar estado de conexión de WhatsApp"""
         try:
             response = requests.get(
-                f"{self.base_url}/instance/connectionState/{self.instance_name}",
-                headers=self._headers(),
+                f"{self.base_url}/session/status/{tenant_id}",
                 timeout=10
             )
-            return response.json()
+            data = response.json()
+            
+            # Mapear estado de Baileys a formato consistente
+            status = data.get("status", {})
+            state = status.get("state", "DISCONNECTED")
+            
+            return {
+                "state": state,
+                "connected": state == "CONNECTED",
+                "has_qr": data.get("qr") is not None
+            }
         except Exception as e:
             logger.error(f"Failed to get connection status: {e}")
             return {"state": "DISCONNECTED", "error": str(e)}
     
-    def send_text_message(self, phone: str, message: str) -> Dict[str, Any]:
-        """Enviar mensaje de texto"""
+    def send_message(self, tenant_id: str, phone: str, message: str) -> Dict[str, Any]:
+        """Enviar mensaje de WhatsApp"""
         # Normalizar número
         number = phone.replace("+", "").replace("-", "").replace(" ", "")
         if not number.startswith("58"):  # Venezuela
@@ -94,15 +87,11 @@ class EvolutionAPIService:
         
         try:
             response = requests.post(
-                f"{self.base_url}/message/sendText/{self.instance_name}",
-                headers=self._headers(),
+                f"{self.base_url}/message/send",
                 json={
-                    "number": number,
-                    "text": message,
-                    "options": {
-                        "delay": 1200,
-                        "presence": "composing"
-                    }
+                    "tenant_id": tenant_id,
+                    "phone": number,
+                    "message": message
                 },
                 timeout=30
             )
@@ -111,80 +100,23 @@ class EvolutionAPIService:
             logger.error(f"Failed to send message: {e}")
             return {"error": str(e)}
     
-    def logout(self) -> Dict[str, Any]:
+    def disconnect(self, tenant_id: str) -> Dict[str, Any]:
         """Cerrar sesión de WhatsApp"""
         try:
             response = requests.delete(
-                f"{self.base_url}/instance/logout/{self.instance_name}",
-                headers=self._headers(),
+                f"{self.base_url}/session/{tenant_id}",
                 timeout=10
             )
             return response.json()
         except Exception as e:
-            logger.error(f"Failed to logout: {e}")
+            logger.error(f"Failed to disconnect: {e}")
             return {"error": str(e)}
 
-class TenantEvolutionService:
-    """Servicio para múltiples tenants - cada uno con su propio bot"""
-    
-    def __init__(self, tenant_id: str, evolution_url: str, api_key: str, instance_name: str = "vendly-bot"):
-        self.tenant_id = tenant_id
-        self.base_url = evolution_url.rstrip("/")
-        self.api_key = api_key
-        self.instance_name = instance_name
-        
-    def _headers(self) -> Dict[str, str]:
-        return {
-            "apikey": self.api_key,
-            "Content-Type": "application/json"
-        }
-    
-    def health_check(self) -> Dict[str, Any]:
-        """Verificar si Evolution API del tenant está activo"""
-        try:
-            response = requests.get(
-                f"{self.base_url}/health",
-                timeout=10
-            )
-            return {
-                "status": "online" if response.status_code == 200 else "error",
-                "code": response.status_code
-            }
-        except Exception as e:
-            logger.error(f"Tenant {self.tenant_id} Evolution API health check failed: {e}")
-            return {"status": "offline", "error": str(e)}
-    
-    def get_connection_status(self) -> Dict[str, Any]:
-        """Verificar estado de conexión WhatsApp del tenant"""
-        try:
-            response = requests.get(
-                f"{self.base_url}/instance/connectionState/{self.instance_name}",
-                headers=self._headers(),
-                timeout=10
-            )
-            return response.json()
-        except Exception as e:
-            logger.error(f"Tenant {self.tenant_id} connection check failed: {e}")
-            return {"state": "DISCONNECTED", "error": str(e)}
-    
-    def send_message(self, phone: str, message: str) -> Dict[str, Any]:
-        """Enviar mensaje desde el bot del tenant"""
-        number = phone.replace("+", "").replace("-", "").replace(" ", "")
-        if not number.startswith("58"):
-            number = f"58{number}"
-        
-        try:
-            response = requests.post(
-                f"{self.base_url}/message/sendText/{self.instance_name}",
-                headers=self._headers(),
-                json={
-                    "number": number,
-                    "text": message,
-                    "options": {"delay": 1200, "presence": "composing"}
-                },
-                timeout=30
-            )
-            return response.json()
-        except Exception as e:
-            logger.error(f"Tenant {self.tenant_id} failed to send message: {e}")
-            return {"error": str(e)}
+# Backward compatibility
+class TenantEvolutionService(BaileysService):
+    """Alias for backward compatibility"""
+    pass
+
+# Singleton instances
+baileys_service = BaileysService()
+evolution_service = baileys_service  # For backward compatibility
