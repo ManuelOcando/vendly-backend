@@ -20,6 +20,16 @@ logger = logging.getLogger(__name__)
 # Instancia del servicio Meta
 meta_service = MetaWhatsAppService()
 
+class MetaWhatsAppConfig(BaseModel):
+    phone_number_id: str
+    access_token: str
+    business_account_id: Optional[str] = None
+    phone_number: Optional[str] = None
+
+class WhatsAppMessageRequest(BaseModel):
+    to: str
+    message: str
+
 class WhatsAppConnection(BaseModel):
     store_id: str
     phone_number: str
