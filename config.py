@@ -18,10 +18,14 @@ class Settings(BaseSettings):
     UPSTASH_REDIS_URL: str = ""
     UPSTASH_REDIS_TOKEN: str = ""
     
-    # WhatsApp (Baileys Service)
-    BAILEYS_SERVICE_URL: str = "https://vendly-baileys.up.railway.app"
+    # WhatsApp (Meta Business API)
+    META_WHATSAPP_PHONE_ID: str = ""
+    META_WHATSAPP_TOKEN: str = ""
+    META_WHATSAPP_BUSINESS_ID: str = ""
+    META_WEBHOOK_VERIFY_TOKEN: str = "vendly-webhook-secret"
     
-    # Legacy (for backward compatibility)
+    # Legacy (Baileys/Evolution - for backward compatibility)
+    BAILEYS_SERVICE_URL: str = ""
     EVOLUTION_API_URL: str = ""
     EVOLUTION_API_KEY: str = ""
     EVOLUTION_INSTANCE_NAME: str = "vendly-bot"
