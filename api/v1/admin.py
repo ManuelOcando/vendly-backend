@@ -13,29 +13,27 @@ async def apply_migrations(user: dict = Depends(get_current_user)):
     try:
         db = get_supabase_client()
         
-        # Leer archivo de migración
-        migration_path = os.path.join(os.path.dirname(__file__), "..", "..", "db", "migrations", "004_whatsapp_configs.sql")
+        # Leer archivo de migración 005 (Meta API)
+        migration_path = os.path.join(os.path.dirname(__file__), "..", "..", "db", "migrations", "005_whatsapp_meta.sql")
         
         with open(migration_path, "r") as f:
             sql = f.read()
         
-        # Ejecutar SQL
-        # Nota: Supabase Python client no soporta raw SQL directamente
-        # Por eso usamos la REST API
+        # Ejecutar SQL usando RPC
         result = db.rpc("exec_sql", {"sql": sql}).execute()
         
         return {
             "status": "success",
             "message": "Migración aplicada correctamente",
-            "migration": "004_whatsapp_configs"
+            "migration": "005_whatsapp_meta"
         }
     except Exception as e:
         logger.error(f"Error applying migration: {e}")
-        # Si la tabla ya existe, no es un error grave
-        if "already exists" in str(e).lower():
+        # Si la columna ya existe, no es un error grave
+        if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
             return {
                 "status": "success", 
-                "message": "La tabla ya existe, migración ya aplicada"
+                "message": "La migración ya está aplicada"
             }
         raise HTTPException(status_code=500, detail=str(e))
 
