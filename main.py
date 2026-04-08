@@ -42,18 +42,28 @@ async def add_security_headers(request, call_next):
     return response
 
 # CORS - permitir frontend
+# Lista de orígenes permitidos
+origins = [
+    settings.FRONTEND_URL,
+    "http://localhost:3000",
+    "https://vendly-frontend.vercel.app",
+    "https://vendly-storefront.vercel.app",
+]
+
+# Agregar wildcard para subdominios vercel si es necesario
+if settings.DEBUG:
+    origins.append("*")
+
+logger.info(f"CORS configured with origins: {origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        settings.FRONTEND_URL,
-        "http://localhost:3000",
-        "https://*.vendly.app",
-        "https://*.vercel.app",
-        "https://vendly-frontend.vercel.app"
-    ],
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=86400,  # 24 horas
 )
 
 # Rutas
