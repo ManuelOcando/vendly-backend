@@ -75,3 +75,9 @@ async def startup_event():
     logger.info(f"Application startup complete - {settings.APP_NAME}")
     if not settings.DEBUG:
         logger.info("Production mode enabled - All required environment variables validated")
+    
+    # Debug: List all registered routes
+    logger.info("Registered routes:")
+    for route in app.routes:
+        if hasattr(route, 'methods') and hasattr(route, 'path'):
+            logger.info(f"  {route.methods} {route.path}")
