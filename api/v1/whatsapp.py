@@ -235,8 +235,8 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
         return {"status": "error", "message": str(e)}
 
 async def process_meta_message(tenant_id: str, phone: str, text: str, phone_id: str):
-    """Procesar mensaje entrante usando el bot"""
-    from services.whatsapp_bot import bot_service
+    """Procesar mensaje entrante usando el nuevo bot service"""
+    from services.whatsapp.meta_bot_service import bot_service
     from db.supabase import get_supabase_client
     
     # Obtener token del tenant
@@ -252,10 +252,8 @@ async def process_meta_message(tenant_id: str, phone: str, text: str, phone_id: 
     # Crear instancia del servicio para responder
     service = MetaWhatsAppService(phone_number_id=phone_id, access_token=token)
     
-    # Procesar mensaje con el bot (temporalmente desactivado para Meta API)
-    # TODO: Implementar bot service compatible con Meta API
-    # response = await bot_service.process_message(phone, text, phone_id)
-    response = f"Gracias por tu mensaje: {text}. El bot está siendo actualizado para Meta API."
+    # Procesar mensaje con el nuevo bot service
+    response = await bot_service.process_message(tenant_id, phone, text, phone_id)
     
     # Enviar respuesta
     if response:
