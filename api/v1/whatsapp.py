@@ -46,7 +46,7 @@ class WebhookMessage(BaseModel):
 
 @router.get("/health")
 async def get_whatsapp_health(tenant: dict = Depends(get_current_tenant)):
-    """Verificar estado de la conexión con Meta API"""
+    """Verificar estado de la conexión con Meta API para el tenant autenticado"""
     from db.supabase import get_supabase_client
     
     db = get_supabase_client()
@@ -76,6 +76,16 @@ async def get_whatsapp_health(tenant: dict = Depends(get_current_tenant)):
         "status": health.get("status"),
         "app_name": health.get("name"),
         "phone_number_id": config.get("phone_number_id"),
+        "timestamp": datetime.now().isoformat()
+    }
+
+@router.get("/health/public")
+async def get_whatsapp_health_public():
+    """Verificar estado básico del servicio WhatsApp (público)"""
+    return {
+        "service": "whatsapp",
+        "status": "available",
+        "message": "WhatsApp API está funcionando. Usa el dashboard para configurar.",
         "timestamp": datetime.now().isoformat()
     }
 
