@@ -17,9 +17,6 @@ from services.whatsapp.meta_service import MetaWhatsAppService
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Instancia del servicio Meta
-meta_service = MetaWhatsAppService()
-
 class MetaWhatsAppConfig(BaseModel):
     phone_number_id: str
     access_token: str
@@ -235,8 +232,10 @@ async def process_meta_message(tenant_id: str, phone: str, text: str, phone_id: 
     # Crear instancia del servicio para responder
     service = MetaWhatsAppService(phone_number_id=phone_id, access_token=token)
     
-    # Procesar mensaje
-    response = await bot_service.process_message(tenant_id, phone, text)
+    # Procesar mensaje con el bot (temporalmente desactivado para Meta API)
+    # TODO: Implementar bot service compatible con Meta API
+    # response = await bot_service.process_message(phone, text, phone_id)
+    response = f"Gracias por tu mensaje: {text}. El bot está siendo actualizado para Meta API."
     
     # Enviar respuesta
     if response:

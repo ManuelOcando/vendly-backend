@@ -53,6 +53,56 @@ class MetaWhatsAppService:
             logger.error(f"Credential verification failed: {e}")
             return {"valid": False, "error": str(e)}
     
+    def health_check(self) -> Dict[str, Any]:
+        """Verificar el estado de la conexión con Meta API"""
+        try:
+            # Verificar credenciales básicas
+            verification = self.verify_credentials()
+            if not verification.get("valid"):
+                return {
+                    "connected": False,
+                    "status": "invalid_credentials",
+                    "error": verification.get("error")
+                }
+            
+            # Obtener información del número de teléfono
+            if self.phone_number_id:
+                response = requests.get(
+                    f"{self.BASE_URL}/{self.phone_number_id}",
+                    headers=self._headers(),
+                    timeout=10
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    return {
+                        "connected": True,
+                        "status": "active",
+                        "name": verification.get("name"),
+                        "phone_number_id": self.phone_number_id,
+                        "display_phone_number": data.get("display_phone_number")
+                    }
+                else:
+                    return {
+                        "connected": False,
+                        "status": "phone_not_found",
+                        "error": "Phone number ID not found or not accessible"
+                    }
+            else:
+                return {
+                    "connected": False,
+                    "status": "no_phone_id",
+                    "error": "Phone number ID not configured"
+                }
+                
+        except Exception as e:
+            logger.error(f"Health check failed: {e}")
+            return {
+                "connected": False,
+                "status": "error",
+                "error": str(e)
+            }
+    
     def get_phone_numbers(self) -> Dict[str, Any]:
         """Obtener números de teléfono asociados a la cuenta"""
         try:
@@ -106,6 +156,10 @@ class MetaWhatsAppService:
         except Exception as e:
             logger.error(f"Failed to send message: {e}")
             return {"status": "failed", "error": str(e)}
+    
+    def send_message(self, to: str, message: str) -> Dict[str, Any]:
+        """Alias para send_text_message - enviar mensaje de texto"""
+        return self.send_text_message(to, message)
     
     def send_template_message(self, to: str, template_name: str, language: str = "es", components: list = None) -> Dict[str, Any]:
         """Enviar mensaje usando plantilla aprobada"""
