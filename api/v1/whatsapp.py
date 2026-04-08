@@ -161,6 +161,26 @@ async def save_whatsapp_config(
         "app": verification.get("name")
     }
 
+@router.get("/webhook")
+async def verify_webhook(request: Request):
+    """Verificar webhook con Meta WhatsApp API"""
+    from config import get_settings
+    
+    settings = get_settings()
+    mode = request.query_params.get('hub.mode')
+    token = request.query_params.get('hub.verify_token')
+    challenge = request.query_params.get('hub.challenge')
+    
+    if mode and token:
+        if mode == 'subscribe' and token == settings.META_WEBHOOK_VERIFY_TOKEN:
+            logger.info(f"Webhook verified successfully")
+            return int(challenge)
+        else:
+            logger.warning(f"Webhook verification failed. Token: {token}")
+            return {"status": "error", "message": "Verification failed"}
+    
+    return {"status": "error", "message": "Missing parameters"}
+
 @router.post("/webhook")
 async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     """Recibir mensajes y eventos de Meta WhatsApp API"""

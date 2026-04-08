@@ -24,11 +24,7 @@ class Settings(BaseSettings):
     META_WHATSAPP_BUSINESS_ID: str = ""
     META_WEBHOOK_VERIFY_TOKEN: str = "vendly-webhook-secret"
     
-    # Legacy (Baileys/Evolution - for backward compatibility)
-    BAILEYS_SERVICE_URL: str = ""
-    EVOLUTION_API_URL: str = ""
-    EVOLUTION_API_KEY: str = ""
-    EVOLUTION_INSTANCE_NAME: str = "vendly-bot"
+    # Backend URL
     BACKEND_URL: str = "https://vendly-backend-uuos.onrender.com"
     
     # LLM (Gemini)

@@ -216,31 +216,8 @@ async def get_whatsapp_status(
         return {"connected": False, "connections": [], "error": str(e)}
 
 
-@router.post("/whatsapp/connect")
-async def connect_whatsapp(
-    connection: WhatsAppConnection,
-    tenant: dict = Depends(get_current_tenant)
-):
-    """Iniciar conexión WhatsApp."""
-    # Usar el servicio de WhatsApp existente
-    from api.v1.whatsapp import WhatsAppConnection as WhatsAppConnectionModel
-    
-    try:
-        # Crear instancia en Evolution API
-        whatsapp_conn = WhatsAppConnectionModel(
-            store_id=tenant["id"],
-            phone_number=connection.phone_number,
-            instance_name=connection.instance_name
-        )
-        
-        # Llamar al endpoint de conexión
-        from api.v1.whatsapp import connect_whatsapp as connect_service
-        result = await connect_service(whatsapp_conn)
-        
-        return result
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# Evolution API connection removed - now using Meta WhatsApp API
+# See /api/v1/whatsapp/config for Meta API configuration
 
 
 @router.get("/daily-summary")
