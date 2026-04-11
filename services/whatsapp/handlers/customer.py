@@ -61,10 +61,10 @@ class MenuHandler(BaseWhatsAppHandler):
         tenant_id = message_data.get("tenant_id")
         
         try:
-            # Get featured products
+            # Get all active products (not just featured)
             items_result = self.db.table("items").select(
                 "name, price, description"
-            ).eq("tenant_id", tenant_id).eq("is_active", True).eq("is_featured", True).limit(5).execute()
+            ).eq("tenant_id", tenant_id).eq("is_active", True).limit(10).execute()
             
             if not items_result.data:
                 return "No hay productos disponibles en este momento."
@@ -74,7 +74,7 @@ class MenuHandler(BaseWhatsAppHandler):
                 for item in items_result.data
             ])
             
-            message = f"""📋 *Nuestros Productos Destacados:*
+            message = f"""📋 *Nuestros Productos:*
 
 {items_text}
 
