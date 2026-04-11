@@ -256,6 +256,113 @@ class ProductOrderHandler(BaseWhatsAppHandler):
             logger.error(traceback.format_exc())
             return "Lo siento, no pude procesar tu pedido. Intenta escribir \"menu\" para ver los productos."
 
+class ConfirmationHandler(BaseWhatsAppHandler):
+    """Handles confirmation responses (yes/no) when there's a pending product"""
+    
+    CONFIRM_KEYWORDS = ["si", "sí", "yes", "confirmar", "confirmo", "acepto", "dale", "ok", "okay"]
+    REJECT_KEYWORDS = ["no", "cancelar", "nope", "rechazar", "denegar"]
+    
+    async def can_handle(self, message_data: Dict[str, Any]) -> bool:
+        """Check if message is a confirmation response and there's a pending product"""
+        message = message_data.get("message", "").lower().strip()
+        session = message_data.get("session", {})
+        
+        # Check if we're awaiting confirmation
+        session_data = session.get("session_data", {}) or {}
+        is_awaiting = session_data.get("awaiting_confirmation", False)
+        has_pending = session_data.get("pending_product") is not None
+        
+        if not (is_awaiting and has_pending):
+            return False
+        
+        # Check if message is a confirmation response
+        return any(keyword in message for keyword in self.CONFIRM_KEYWORDS + self.REJECT_KEYWORDS)
+    
+    async def handle(self, message_data: Dict[str, Any]) -> Optional[str]:
+        """Handle confirmation or rejection of pending product"""
+        message = message_data.get("message", "").lower().strip()
+        session = message_data.get("session", {})
+        
+        session_data = session.get("session_data", {}) or {}
+        pending_product = session_data.get("pending_product", {})
+        current_cart = session_data.get("cart", [])
+        
+        if not pending_product:
+            return "No hay ningún producto pendiente de confirmación."
+        
+        # Check if confirmed or rejected
+        is_confirmed = any(keyword in message for keyword in self.CONFIRM_KEYWORDS)
+        is_rejected = any(keyword in message for keyword in self.REJECT_KEYWORDS)
+        
+        session_id = session.get("id")
+        
+        if is_confirmed:
+            # Add product to cart
+            product_id = pending_product.get("product_id")
+            existing = next((item for item in current_cart if item["product_id"] == product_id), None)
+            
+            if existing:
+                existing["quantity"] += pending_product.get("quantity", 1)
+                if pending_product.get("modifications"):
+                    existing.setdefault("modifications", []).extend(pending_product["modifications"])
+            else:
+                cart_item = {
+                    "product_id": product_id,
+                    "name": pending_product["name"],
+                    "price": pending_product["price"],
+                    "quantity": pending_product.get("quantity", 1),
+                    "modifications": pending_product.get("modifications", [])
+                }
+                current_cart.append(cart_item)
+            
+            # Clear pending product and update state
+            session_data["pending_product"] = None
+            session_data["awaiting_confirmation"] = False
+            session_data["cart"] = current_cart
+            
+            total = sum(item["price"] * item["quantity"] for item in current_cart)
+            session_data["total"] = total
+            
+            if session_id:
+                await self.update_session_state(session_id, "ordering", session_data)
+            
+            # Build cart summary
+            cart_text = "\n".join([
+                f"• {item['name']} x{item['quantity']} - ${item['price'] * item['quantity']:.2f}"
+                for item in current_cart
+            ])
+            
+            modifications = pending_product.get("modifications", [])
+            mod_text = ""
+            if modifications:
+                mod_text = f" {' '.join(modifications)}"
+            
+            return f"""✅ *Agregado:*
+{pending_product['name']}{mod_text} x{pending_product.get('quantity', 1)}
+
+🛒 *Tu carrito:*
+{cart_text}
+
+💰 *Total:* ${total:.2f}
+
+¿Deseas agregar otro producto o confirmar el pedido?"""
+        
+        elif is_rejected:
+            # Clear pending product
+            session_data["pending_product"] = None
+            session_data["awaiting_confirmation"] = False
+            
+            if session_id:
+                await self.update_session_state(session_id, "ordering", session_data)
+            
+            return """❌ Producto descartado.
+
+¿Deseas intentar con otro producto? Escribe:
+• "menu" para ver la lista
+• El nombre de otro producto"""
+        
+        return None  # Let next handler process
+
 class CartHandler(BaseWhatsAppHandler):
     """Handles cart-related messages from storefront"""
     

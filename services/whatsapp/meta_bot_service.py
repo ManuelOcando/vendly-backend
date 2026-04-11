@@ -9,7 +9,8 @@ from datetime import datetime
 from db.supabase import get_supabase_client
 from services.whatsapp.meta_service import MetaWhatsAppService
 from services.whatsapp.handlers import (
-    WelcomeHandler, MenuHandler, ProductOrderHandler, CartHandler, CartConfirmationHandler, SellerMenuHandler
+    WelcomeHandler, MenuHandler, ProductOrderHandler, ConfirmationHandler, 
+    CartHandler, CartConfirmationHandler, SellerMenuHandler, LLMHandler
 )
 
 logger = logging.getLogger(__name__)
@@ -26,17 +27,22 @@ class MetaWhatsAppBotService:
         # Customer handlers
         welcome_handler = WelcomeHandler(self.db)
         menu_handler = MenuHandler(self.db)
-        product_order_handler = ProductOrderHandler(self.db)
+        confirmation_handler = ConfirmationHandler(self.db)  # Handle yes/no for pending products
+        product_order_handler = ProductOrderHandler(self.db)  # Exact match product names
+        llm_handler = LLMHandler(self.db)  # Natural language fallback
         cart_handler = CartHandler(self.db)
         cart_confirmation_handler = CartConfirmationHandler(self.db)
         
         # Seller handlers
         seller_handler = SellerMenuHandler(self.db)
         
-        # Chain customer handlers: Welcome -> Menu -> ProductOrder -> Cart -> CartConfirmation
+        # Chain customer handlers:
+        # Welcome -> Menu -> Confirmation (yes/no) -> ProductOrder (exact match) -> LLM (fallback) -> Cart -> CartConfirmation
         welcome_handler.next_handler = menu_handler
-        menu_handler.next_handler = product_order_handler
-        product_order_handler.next_handler = cart_handler
+        menu_handler.next_handler = confirmation_handler
+        confirmation_handler.next_handler = product_order_handler
+        product_order_handler.next_handler = llm_handler
+        llm_handler.next_handler = cart_handler
         cart_handler.next_handler = cart_confirmation_handler
         
         # Store chains

@@ -30,6 +30,17 @@ class Settings(BaseSettings):
     # LLM (Gemini)
     GEMINI_API_KEY: str = ""
     
+    # OpenRouter (Qwen and other LLMs)
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_MODEL: str = "qwen/qwen-3.5b-instruct"
+    LLM_FALLBACK_ENABLED: bool = True
+    LLM_CONFIDENCE_THRESHOLD: float = 0.7
+    
+    # Bot Personality Defaults
+    BOT_DEFAULT_TONE: str = "casual"  # formal | casual | amigable | profesional
+    BOT_DEFAULT_EMOJIS: bool = True
+    BOT_DEFAULT_GREETING: str = "¡Hola! 👋 Bienvenido a {store_name}"
+    
     # Resend (Email)
     RESEND_API_KEY: str = ""
     
