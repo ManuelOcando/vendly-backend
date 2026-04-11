@@ -42,15 +42,25 @@ async def add_security_headers(request, call_next):
     return response
 
 # CORS - permitir frontend
-# Lista de orígenes permitidos
-origins = [
+# Lista de orígenes permitidos (filtrar vacíos)
+origins = list(filter(None, [
     settings.FRONTEND_URL,
     "http://localhost:3000",
     "https://vendly-frontend.vercel.app",
     "https://vendly-storefront.vercel.app",
-]
+    "https://vendly-frontend.vercel.app",  # Duplicado intencional por si acaso
+]))
 
-# Agregar wildcard para subdominios vercel si es necesario
+# Eliminar duplicados manteniendo orden
+seen = set()
+origins = [x for x in origins if not (x in seen or seen.add(x))]
+
+# En producción, si FRONTEND_URL no está configurado, agregar wildcard temporal
+if not settings.DEBUG and len(origins) < 2:
+    logger.warning("FRONTEND_URL not configured, adding temporary wildcard")
+    origins.append("*")
+
+# Agregar wildcard para desarrollo
 if settings.DEBUG:
     origins.append("*")
 
@@ -65,6 +75,16 @@ app.add_middleware(
     expose_headers=["*"],
     max_age=86400,  # 24 horas
 )
+
+# Ensure CORS headers are added to all responses including errors
+@app.middleware("http")
+async def cors_middleware(request, call_next):
+    response = await call_next(request)
+    origin = request.headers.get("origin")
+    if origin in origins or "*" in origins:
+        response.headers["Access-Control-Allow-Origin"] = origin if origin in origins else origins[0] if origins else "*"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
 
 # Rutas
 app.include_router(v1_router)
