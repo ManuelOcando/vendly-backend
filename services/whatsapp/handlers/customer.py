@@ -54,7 +54,14 @@ class MenuHandler(BaseWhatsAppHandler):
         """Check if message is requesting menu"""
         message = message_data.get("message", "").lower().strip()
         
-        return any(keyword in message for keyword in ["menu", "catálogo", "catalogo", "ver productos", "productos"])
+        # Normalizar acentos para comparación
+        message_normalized = message.replace("ú", "u").replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o")
+        
+        keywords = ["menu", "catalogo", "ver productos", "productos", "catalogo"]
+        keywords_with_accents = ["menú", "catálogo"]
+        
+        return any(keyword in message_normalized for keyword in keywords) or \
+               any(keyword in message for keyword in keywords_with_accents)
     
     async def handle(self, message_data: Dict[str, Any]) -> Optional[str]:
         """Handle menu request"""
@@ -87,61 +94,131 @@ class MenuHandler(BaseWhatsAppHandler):
             return "Lo siento, no puedo mostrar el menú en este momento. Intenta más tarde."
 
 class ProductOrderHandler(BaseWhatsAppHandler):
-    """Handles ordering products by name"""
+    """Handles ordering products by name - supports multiple products in one message"""
+    
+    # Separadores para detectar múltiples productos
+    PRODUCT_SEPARATORS = [" y ", " + ", ", ", " mas ", " más ", "; ", " | "]
     
     async def can_handle(self, message_data: Dict[str, Any]) -> bool:
         """Check if message could be a product name (not a command)"""
         message = message_data.get("message", "").lower().strip()
         
+        # Normalizar para comparar comandos
+        message_normalized = message.replace("ú", "u").replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o")
+        
         # Skip if it's a known command
-        commands = ["hola", "hi", "hello", "menu", "catálogo", "catalogo", 
+        commands = ["hola", "hi", "hello", "menu", "catalogo", "catálogo",
                    "ver productos", "productos", "pedido:", "si", "sí", 
-                   "confirmar", "confirmo", "acepto", "no", "cancelar"]
+                   "confirmar", "confirmo", "acepto", "no", "cancelar", "ver carrito", "carrito"]
         
         # Must be at least 2 characters and not a command
-        return len(message) >= 2 and not any(cmd in message for cmd in commands)
+        if len(message) < 2:
+            return False
+            
+        return not any(cmd in message_normalized for cmd in commands)
+    
+    def _normalize_text(self, text: str) -> str:
+        """Remove accents for better matching"""
+        return text.lower().replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u").replace("ñ", "n").strip()
+    
+    def _split_products(self, message: str) -> list:
+        """Split message into multiple product names"""
+        # Reemplazar todos los separadores por un marcador común
+        temp = message
+        for sep in self.PRODUCT_SEPARATORS:
+            temp = temp.replace(sep, "||")
+        
+        # Dividir y limpiar
+        products = [p.strip() for p in temp.split("||") if p.strip()]
+        return products
+    
+    async def _find_product(self, tenant_id: str, search_term: str) -> tuple:
+        """Find product by search term. Returns (product, error_message)"""
+        search_normalized = self._normalize_text(search_term)
+        
+        # Search for products
+        items_result = self.db.table("items").select(
+            "id, name, price, description"
+        ).eq("tenant_id", tenant_id).eq("is_active", True).execute()
+        
+        if not items_result.data:
+            return None, f"No hay productos disponibles"
+        
+        # Buscar coincidencia exacta primero (sin acentos)
+        for item in items_result.data:
+            item_name_normalized = self._normalize_text(item['name'])
+            if search_normalized == item_name_normalized:
+                return item, None
+        
+        # Buscar coincidencia parcial
+        matches = []
+        for item in items_result.data:
+            item_name_normalized = self._normalize_text(item['name'])
+            if search_normalized in item_name_normalized or item_name_normalized in search_normalized:
+                matches.append(item)
+        
+        if len(matches) == 0:
+            return None, f"No encontré \"{search_term}\""
+        elif len(matches) == 1:
+            return matches[0], None
+        else:
+            # Multiple matches - return list for user to choose
+            product_list = "\n".join([f"• {m['name']} - ${m['price']:.2f}" for m in matches[:5]])
+            return None, f"¿Cuál de estos?\n{product_list}"
     
     async def handle(self, message_data: Dict[str, Any]) -> Optional[str]:
-        """Handle product order by name"""
+        """Handle product order by name - supports multiple products"""
         tenant_id = message_data.get("tenant_id")
         phone = message_data.get("phone")
-        product_name = message_data.get("message", "").strip()
+        raw_message = message_data.get("message", "").strip()
         session = message_data.get("session", {})
         
         try:
-            # Search for product by name (case-insensitive partial match)
-            items_result = self.db.table("items").select(
-                "id, name, price, description"
-            ).eq("tenant_id", tenant_id).eq("is_active", True).ilike("name", f"%{product_name}%").limit(5).execute()
+            # Split message into multiple products
+            product_names = self._split_products(raw_message)
             
-            if not items_result.data:
-                return f"No encontré productos con \"{product_name}\".\n\n🛒 Escribe \"menu\" para ver todos los productos disponibles."
+            if not product_names:
+                return None  # Let next handler handle it
             
-            # If multiple matches, ask user to be more specific
-            if len(items_result.data) > 1:
-                products_list = "\n".join([f"• {item['name']} - ${item['price']:.2f}" for item in items_result.data])
-                return f"Encontré varios productos:\n\n{products_list}\n\nPor favor, escribe el nombre más específico del que deseas."
-            
-            # Single match - add to cart
-            product = items_result.data[0]
+            logger.info(f"Processing {len(product_names)} product(s): {product_names}")
             
             # Get or create session cart
             session_data = session.get("session_data", {}) or {}
             cart = session_data.get("cart", [])
             
-            # Add product to cart
-            cart_item = {
-                "product_id": product["id"],
-                "name": product["name"],
-                "price": product["price"],
-                "quantity": 1
-            }
-            cart.append(cart_item)
+            added_products = []
+            errors = []
+            
+            # Process each product
+            for product_name in product_names:
+                product, error = await self._find_product(tenant_id, product_name)
+                
+                if product:
+                    # Check if already in cart (increment quantity)
+                    existing = next((item for item in cart if item["product_id"] == product["id"]), None)
+                    if existing:
+                        existing["quantity"] += 1
+                        added_products.append(f"{product['name']} x{existing['quantity']}")
+                    else:
+                        cart_item = {
+                            "product_id": product["id"],
+                            "name": product["name"],
+                            "price": product["price"],
+                            "quantity": 1
+                        }
+                        cart.append(cart_item)
+                        added_products.append(product['name'])
+                else:
+                    errors.append(f"• {product_name}: {error}")
+            
+            # If nothing was added and there are errors
+            if not added_products and errors:
+                return f"❌ No pude agregar:\n" + "\n".join(errors) + "\n\n🛒 Escribe \"menu\" para ver los productos"
             
             # Calculate total
             total = sum(item["price"] * item["quantity"] for item in cart)
             
-            # Update session with cart
+            # Update session
             session_id = session.get("id")
             if session_id:
                 await self.update_session_state(
@@ -150,19 +227,24 @@ class ProductOrderHandler(BaseWhatsAppHandler):
                     {"cart": cart, "total": total}
                 )
             
-            # Build cart summary
+            # Build response
+            added_text = "\n".join([f"✅ {name}" for name in added_products])
+            
             cart_text = "\n".join([
                 f"• {item['name']} x{item['quantity']} - ${item['price'] * item['quantity']:.2f}"
                 for item in cart
             ])
             
-            message = f"""✅ *Agregado al carrito:*
-{product['name']} - ${product['price']:.2f}
+            error_text = ""
+            if errors:
+                error_text = f"\n\n⚠️ No encontré:\n" + "\n".join(errors)
+            
+            message = f"""{added_text}
 
 🛒 *Tu carrito:*
 {cart_text}
 
-💰 *Total:* ${total:.2f}
+💰 *Total:* ${total:.2f}{error_text}
 
 ¿Deseas agregar otro producto o confirmar el pedido?"""
             
@@ -170,6 +252,8 @@ class ProductOrderHandler(BaseWhatsAppHandler):
             
         except Exception as e:
             logger.error(f"Error processing product order: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return "Lo siento, no pude procesar tu pedido. Intenta escribir \"menu\" para ver los productos."
 
 class CartHandler(BaseWhatsAppHandler):
