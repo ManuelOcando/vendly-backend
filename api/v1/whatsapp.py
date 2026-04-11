@@ -123,65 +123,90 @@ async def save_whatsapp_config(
     tenant: dict = Depends(get_current_tenant)
 ):
     """Guardar configuración de Meta WhatsApp API"""
-    from db.supabase import get_supabase_client
-    
-    db = get_supabase_client()
-    
-    # Verificar credenciales (pero guardamos igual para debug)
-    service = MetaWhatsAppService(
-        phone_number_id=data.phone_number_id,
-        access_token=data.access_token
-    )
-    
     try:
-        verification = service.verify_credentials()
-        is_valid = verification.get("valid", False)
-        error_detail = verification.get("error", "")
-        logger.info(f"Credential verification result: valid={is_valid}, error={error_detail}")
+        from db.supabase import get_supabase_client
+        
+        db = get_supabase_client()
+        
+        logger.info(f"Saving WhatsApp config for tenant {tenant['id']}")
+        logger.info(f"Phone ID: {data.phone_number_id}, Business ID: {data.business_account_id}, Phone: {data.phone_number}")
+        
+        # Verificar credenciales (pero guardamos igual para debug)
+        service = MetaWhatsAppService(
+            phone_number_id=data.phone_number_id,
+            access_token=data.access_token
+        )
+        
+        try:
+            verification = service.verify_credentials()
+            is_valid = verification.get("valid", False)
+            error_detail = verification.get("error", "")
+            logger.info(f"Credential verification result: valid={is_valid}")
+        except Exception as e:
+            logger.error(f"Error during credential verification: {e}")
+            is_valid = False
+            error_detail = str(e)
+        
+        # Preparar datos - manejar valores vacíos
+        config_data = {
+            "tenant_id": tenant["id"],
+            "phone_number_id": data.phone_number_id,
+            "access_token": data.access_token,
+            "is_connected": is_valid,
+            "provider": "meta",
+            "updated_at": datetime.now().isoformat()
+        }
+        
+        # Solo agregar campos opcionales si tienen valor
+        if data.business_account_id:
+            config_data["business_account_id"] = data.business_account_id
+        if data.phone_number:
+            config_data["phone_number"] = data.phone_number
+        
+        logger.info(f"Config data prepared: {config_data.keys()}")
+        
+        # Verificar si ya existe
+        try:
+            existing = db.table("whatsapp_configs").select("id").eq("tenant_id", tenant["id"]).execute()
+            logger.info(f"Existing config check: {len(existing.data) if existing.data else 0} found")
+        except Exception as e:
+            logger.error(f"Error checking existing config: {e}")
+            existing = None
+        
+        # Insert o Update
+        try:
+            if existing and existing.data:
+                result = db.table("whatsapp_configs").update(config_data).eq("tenant_id", tenant["id"]).execute()
+                logger.info("Config updated successfully")
+            else:
+                config_data["created_at"] = datetime.now().isoformat()
+                result = db.table("whatsapp_configs").insert(config_data).execute()
+                logger.info("Config inserted successfully")
+        except Exception as e:
+            logger.error(f"Database error: {e}")
+            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        
+        # Mensaje según resultado
+        if is_valid:
+            message = "WhatsApp configurado y verificado correctamente"
+        else:
+            message = f"Configuración guardada pero credenciales no verificadas. Error: {error_detail}"
+        
+        return {
+            "status": "success",
+            "message": message,
+            "verified": is_valid,
+            "is_connected": is_valid,
+            "warning": error_detail if not is_valid else None
+        }
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error during credential verification: {e}")
-        is_valid = False
-        error_detail = str(e)
-    
-    # Preparar datos
-    config_data = {
-        "tenant_id": tenant["id"],
-        "phone_number_id": data.phone_number_id,
-        "access_token": data.access_token,
-        "business_account_id": data.business_account_id,
-        "phone_number": data.phone_number,
-        "is_connected": is_valid,  # Solo conectado si verificación OK
-        "provider": "meta",
-        "updated_at": datetime.now().isoformat()
-    }
-    
-    # Verificar si ya existe
-    existing = db.table("whatsapp_configs").select("id").eq("tenant_id", tenant["id"]).execute()
-    
-    if existing.data:
-        # Actualizar
-        result = db.table("whatsapp_configs").update(config_data).eq("tenant_id", tenant["id"]).execute()
-    else:
-        # Crear nuevo
-        config_data["created_at"] = datetime.now().isoformat()
-        result = db.table("whatsapp_configs").insert(config_data).execute()
-    
-    # Mensaje según resultado
-    if is_valid:
-        message = "WhatsApp configurado y verificado correctamente"
-        verified_flag = True
-    else:
-        message = f"Configuración guardada pero credenciales no verificadas. Error: {error_detail}"
-        verified_flag = False
-    
-    return {
-        "status": "success",
-        "message": message,
-        "verified": verified_flag,
-        "is_connected": is_valid,
-        "warning": error_detail if not is_valid else None,
-        "app": verification.get("name") if is_valid else None
-    }
+        logger.error(f"Unexpected error in save_whatsapp_config: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 @router.get("/webhook")
 async def verify_webhook(request: Request):
