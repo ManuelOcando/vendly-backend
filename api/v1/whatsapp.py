@@ -148,13 +148,18 @@ async def save_whatsapp_config(
             error_detail = str(e)
         
         # Preparar datos - manejar valores vacíos
+        # NOTA: evolution_api_url y evolution_api_key son legacy, se mantienen para compatibilidad
         config_data = {
             "tenant_id": tenant["id"],
             "phone_number_id": data.phone_number_id,
             "access_token": data.access_token,
             "is_connected": is_valid,
             "provider": "meta",
-            "updated_at": datetime.now().isoformat()
+            "updated_at": datetime.now().isoformat(),
+            # Legacy fields (para satisfacer NOT NULL constraint hasta que se migre la DB)
+            "evolution_api_url": "https://placeholder.local",
+            "evolution_api_key": "placeholder",
+            "instance_name": "meta-instance"
         }
         
         # Solo agregar campos opcionales si tienen valor
