@@ -9,7 +9,7 @@ from datetime import datetime
 from db.supabase import get_supabase_client
 from services.whatsapp.meta_service import MetaWhatsAppService
 from services.whatsapp.handlers import (
-    WelcomeHandler, MenuHandler, CartHandler, CartConfirmationHandler, SellerMenuHandler
+    WelcomeHandler, MenuHandler, ProductOrderHandler, CartHandler, CartConfirmationHandler, SellerMenuHandler
 )
 
 logger = logging.getLogger(__name__)
@@ -26,15 +26,17 @@ class MetaWhatsAppBotService:
         # Customer handlers
         welcome_handler = WelcomeHandler(self.db)
         menu_handler = MenuHandler(self.db)
+        product_order_handler = ProductOrderHandler(self.db)
         cart_handler = CartHandler(self.db)
         cart_confirmation_handler = CartConfirmationHandler(self.db)
         
         # Seller handlers
         seller_handler = SellerMenuHandler(self.db)
         
-        # Chain customer handlers
+        # Chain customer handlers: Welcome -> Menu -> ProductOrder -> Cart -> CartConfirmation
         welcome_handler.next_handler = menu_handler
-        menu_handler.next_handler = cart_handler
+        menu_handler.next_handler = product_order_handler
+        product_order_handler.next_handler = cart_handler
         cart_handler.next_handler = cart_confirmation_handler
         
         # Store chains
