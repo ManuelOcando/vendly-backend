@@ -141,28 +141,42 @@ class MetaWhatsAppService:
             return {"error": str(e)}
     
     def send_text_message(self, to: str, message: str) -> Dict[str, Any]:
-        """Enviar mensaje de texto"""
+        """Enviar mensaje de texto simple"""
+        logger.info(f"=== SENDING MESSAGE ===")
+        logger.info(f"To: {to}, Message length: {len(message)}")
+        logger.info(f"Using phone_number_id: {self.phone_number_id}")
+        logger.info(f"Token prefix: {self.access_token[:15] if self.access_token else 'None'}...")
+        
         # Formatear número (quitar + si existe)
         phone = to.replace("+", "").replace("-", "").replace(" ", "")
+        logger.info(f"Formatted phone: {phone}")
         
         try:
+            url = self._url("/messages")
+            logger.info(f"API URL: {url}")
+            
+            payload = {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": phone,
+                "type": "text",
+                "text": {
+                    "body": message,
+                    "preview_url": False
+                }
+            }
+            logger.info(f"Payload: {payload}")
+            
             response = requests.post(
-                self._url("/messages"),
+                url,
                 headers=self._headers(),
-                json={
-                    "messaging_product": "whatsapp",
-                    "recipient_type": "individual",
-                    "to": phone,
-                    "type": "text",
-                    "text": {
-                        "body": message,
-                        "preview_url": False
-                    }
-                },
+                json=payload,
                 timeout=30
             )
             
             data = response.json()
+            logger.info(f"Meta API response status: {response.status_code}")
+            logger.info(f"Meta API response: {data}")
             
             if response.status_code == 200:
                 return {
@@ -174,11 +188,18 @@ class MetaWhatsAppService:
                 logger.error(f"Meta API error: {data}")
                 return {
                     "status": "failed",
-                    "error": data.get("error", {}).get("message", "Unknown error")
+                    "error": data.get("error", {}).get("message", "Unknown error"),
+                    "code": data.get("error", {}).get("code", ""),
+                    "details": data
                 }
                 
+        except requests.exceptions.Timeout:
+            logger.error(f"Timeout sending message to {phone}")
+            return {"status": "failed", "error": "Timeout"}
         except Exception as e:
             logger.error(f"Failed to send message: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {"status": "failed", "error": str(e)}
     
     def send_message(self, to: str, message: str) -> Dict[str, Any]:
