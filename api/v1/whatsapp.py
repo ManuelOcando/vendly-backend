@@ -127,19 +127,21 @@ async def save_whatsapp_config(
     
     db = get_supabase_client()
     
-    # Verificar credenciales antes de guardar
+    # Verificar credenciales (pero guardamos igual para debug)
     service = MetaWhatsAppService(
         phone_number_id=data.phone_number_id,
         access_token=data.access_token
     )
     
-    verification = service.verify_credentials()
-    
-    if not verification.get("valid"):
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Credenciales inválidas: {verification.get('error')}"
-        )
+    try:
+        verification = service.verify_credentials()
+        is_valid = verification.get("valid", False)
+        error_detail = verification.get("error", "")
+        logger.info(f"Credential verification result: valid={is_valid}, error={error_detail}")
+    except Exception as e:
+        logger.error(f"Error during credential verification: {e}")
+        is_valid = False
+        error_detail = str(e)
     
     # Preparar datos
     config_data = {
@@ -148,7 +150,7 @@ async def save_whatsapp_config(
         "access_token": data.access_token,
         "business_account_id": data.business_account_id,
         "phone_number": data.phone_number,
-        "is_connected": True,
+        "is_connected": is_valid,  # Solo conectado si verificación OK
         "provider": "meta",
         "updated_at": datetime.now().isoformat()
     }
@@ -164,11 +166,21 @@ async def save_whatsapp_config(
         config_data["created_at"] = datetime.now().isoformat()
         result = db.table("whatsapp_configs").insert(config_data).execute()
     
+    # Mensaje según resultado
+    if is_valid:
+        message = "WhatsApp configurado y verificado correctamente"
+        verified_flag = True
+    else:
+        message = f"Configuración guardada pero credenciales no verificadas. Error: {error_detail}"
+        verified_flag = False
+    
     return {
         "status": "success",
-        "message": "WhatsApp configurado correctamente",
-        "verified": True,
-        "app": verification.get("name")
+        "message": message,
+        "verified": verified_flag,
+        "is_connected": is_valid,
+        "warning": error_detail if not is_valid else None,
+        "app": verification.get("name") if is_valid else None
     }
 
 @router.get("/webhook")

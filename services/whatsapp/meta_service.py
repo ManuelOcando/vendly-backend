@@ -31,12 +31,16 @@ class MetaWhatsAppService:
     def verify_credentials(self) -> Dict[str, Any]:
         """Verificar que las credenciales son válidas"""
         try:
+            logger.info(f"Verifying credentials - Phone ID: {self.phone_number_id}, Token prefix: {self.access_token[:15] if self.access_token else 'None'}...")
+            
             response = requests.get(
                 f"{self.BASE_URL}/me",
                 headers=self._headers(),
                 timeout=10
             )
             data = response.json()
+            
+            logger.info(f"Meta API response - Status: {response.status_code}, Data: {data}")
             
             if response.status_code == 200:
                 return {
@@ -45,10 +49,30 @@ class MetaWhatsAppService:
                     "name": data.get("name")
                 }
             else:
+                error_msg = data.get("error", {}).get("message", "Unknown error")
+                error_code = data.get("error", {}).get("code", "")
+                error_type = data.get("error", {}).get("type", "")
+                
+                # Traducir errores comunes
+                if error_code == 190:
+                    error_msg = "Token inválido o expirado. Genera un nuevo token en Meta Business."
+                elif error_code == 100:
+                    error_msg = "App no encontrada. Verifica que el App ID sea correcto."
+                elif "expired" in error_msg.lower():
+                    error_msg = "Token expirado. Necesitas generar uno nuevo."
+                
+                logger.error(f"Meta API error: {error_msg} (code: {error_code}, type: {error_type})")
+                
                 return {
                     "valid": False,
-                    "error": data.get("error", {}).get("message", "Unknown error")
+                    "error": error_msg,
+                    "code": error_code,
+                    "type": error_type,
+                    "raw_response": data
                 }
+        except requests.exceptions.Timeout:
+            logger.error("Meta API timeout")
+            return {"valid": False, "error": "Timeout - Meta API no responde"}
         except Exception as e:
             logger.error(f"Credential verification failed: {e}")
             return {"valid": False, "error": str(e)}
