@@ -53,8 +53,7 @@ class Settings(BaseSettings):
             required_vars = [
                 "SUPABASE_URL",
                 "SUPABASE_ANON_KEY", 
-                "SUPABASE_SERVICE_ROLE_KEY",
-                "FRONTEND_URL"
+                "SUPABASE_SERVICE_ROLE_KEY"
             ]
             
             missing_vars = []
@@ -65,6 +64,13 @@ class Settings(BaseSettings):
             if missing_vars:
                 raise ValueError(
                     f"Missing required environment variables for production: {', '.join(missing_vars)}"
+                )
+            
+            # Warning if FRONTEND_URL not set (CORS may not work properly)
+            if not self.FRONTEND_URL or self.FRONTEND_URL == "http://localhost:3000":
+                import logging
+                logging.getLogger(__name__).warning(
+                    "FRONTEND_URL not properly configured. CORS may not work for production frontend."
                 )
 
 
