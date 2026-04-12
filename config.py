@@ -27,10 +27,14 @@ class Settings(BaseSettings):
     # Backend URL
     BACKEND_URL: str = "https://vendly-backend-uuos.onrender.com"
     
-    # LLM (Gemini)
-    GEMINI_API_KEY: str = ""
+    # LLM Provider Selection
+    LLM_PROVIDER: str = "gemini"  # gemini | openrouter
     
-    # OpenRouter (Qwen and other LLMs)
+    # Gemini Configuration
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-2.5-flash-preview-05-20"  # gemini-2.5-flash | gemini-2.5-pro
+    
+    # OpenRouter Configuration
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_MODEL: str = "qwen/qwen-3.5b-instruct"
     LLM_FALLBACK_ENABLED: bool = True

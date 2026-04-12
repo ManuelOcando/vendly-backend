@@ -1,6 +1,6 @@
 """
 LLM Handler for WhatsApp Bot
-Processes natural language messages using OpenRouter (Qwen 3.6 Plus)
+Multi-provider support: Gemini, OpenRouter, etc.
 """
 from typing import Dict, Any, Optional, List
 import logging
@@ -8,7 +8,7 @@ import json
 from datetime import datetime
 
 from .base import BaseWhatsAppHandler
-from services.llm.openrouter_service import llm_service
+from services.llm import get_llm_provider, LLMProvider
 from config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 
 class LLMHandler(BaseWhatsAppHandler):
     """
-    Handler that uses LLM (OpenRouter) to process natural language messages.
+    Handler that uses LLM to process natural language messages.
+    Supports multiple providers: Gemini, OpenRouter, etc.
     This is a fallback handler when other handlers don't match.
     """
     
@@ -31,8 +32,13 @@ class LLMHandler(BaseWhatsAppHandler):
         if not settings.LLM_FALLBACK_ENABLED:
             return False
         
-        # Check if we have API key configured
-        if not settings.OPENROUTER_API_KEY:
+        # Check if we have API key configured for the selected provider
+        provider = getattr(settings, 'LLM_PROVIDER', 'gemini')
+        
+        if provider == "gemini" and not settings.GEMINI_API_KEY:
+            logger.warning("Gemini API key not configured, skipping LLM handler")
+            return False
+        elif provider == "openrouter" and not settings.OPENROUTER_API_KEY:
             logger.warning("OpenRouter API key not configured, skipping LLM handler")
             return False
         
@@ -65,18 +71,49 @@ class LLMHandler(BaseWhatsAppHandler):
             # Get tenant personality config
             personality = await self._get_personality(tenant_id)
             
-            # Call LLM
-            llm_response = await llm_service.process_message(
-                user_message=user_message,
+            # Get LLM provider (supports tenant-specific config)
+            tenant_config = await self._get_tenant_llm_config(tenant_id)
+            provider = get_llm_provider(tenant_config)
+            
+            if not provider:
+                logger.error("Could not create LLM provider")
+                return self._get_fallback_message()
+            
+            # Get available products
+            available_products = await self._get_available_products(tenant_id)
+            
+            # Build prompts using provider's methods
+            system_prompt = provider.build_system_prompt(
                 store_name=tenant_name,
                 personality=personality,
-                available_products=available_products,
+                available_products=available_products
+            )
+            
+            context_prompt = provider.build_context_prompt(
                 current_cart=current_cart,
                 conversation_history=conversation_history,
                 current_state=current_state
             )
             
+            # Call LLM
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": context_prompt},
+                {"role": "user", "content": user_message}
+            ]
+            
+            llm_response = await provider.generate_response(
+                messages=messages,
+                temperature=0.7,
+                max_tokens=800,
+                response_format={"type": "json_object"}
+            )
+            
             # Check if there was an LLM error
+            if not llm_response:
+                logger.error("LLM returned no response")
+                return self._get_fallback_message()
+            
             if llm_response.get("llm_error"):
                 return llm_response.get("response_text", self._get_fallback_message())
             
@@ -85,8 +122,8 @@ class LLMHandler(BaseWhatsAppHandler):
             response_text = llm_response.get("response_text", "")
             products = llm_response.get("products", [])
             
-            # Handle different intentions
-            if intention == "needs_confirmation" or self._any_product_needs_confirmation(products):
+            # Check if any product requires confirmation
+            if intention == "needs_confirmation" or self._any_product_needs_confirmation(products, provider):
                 return await self._handle_needs_confirmation(
                     products, response_text, session, tenant_id, phone
                 )
@@ -162,10 +199,27 @@ class LLMHandler(BaseWhatsAppHandler):
             "greeting_style": settings.BOT_DEFAULT_GREETING
         }
     
-    def _any_product_needs_confirmation(self, products: List[Dict[str, Any]]) -> bool:
+    async def _get_tenant_llm_config(self, tenant_id: str) -> Optional[Dict[str, Any]]:
+        """Get tenant-specific LLM configuration"""
+        try:
+            result = self.db.table("whatsapp_configs").select(
+                "llm_config"
+            ).eq("tenant_id", tenant_id).execute()
+            
+            if result.data and result.data[0].get("llm_config"):
+                config = result.data[0]["llm_config"]
+                if isinstance(config, str):
+                    config = json.loads(config)
+                return config
+        except Exception as e:
+            logger.warning(f"Could not load tenant LLM config: {e}")
+        
+        return None
+    
+    def _any_product_needs_confirmation(self, products: List[Dict[str, Any]], provider: LLMProvider) -> bool:
         """Check if any product requires confirmation"""
         for product in products:
-            if llm_service.should_confirm_product(product):
+            if provider.should_confirm_product(product):
                 return True
         return False
     
