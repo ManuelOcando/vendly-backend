@@ -19,16 +19,38 @@ class GeminiProvider(LLMProvider):
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
+        
+        logger.info("🚀 Initializing GeminiProvider...")
+        
         self.api_key = config.get("api_key")
         self.model_name = config.get("model", self.DEFAULT_MODEL)
         self.confidence_threshold = config.get("confidence_threshold", self.CONFIDENCE_THRESHOLD)
         
+        logger.info(f"📊 Model: {self.model_name}")
+        logger.info(f"📊 Confidence threshold: {self.confidence_threshold}")
+        
         if not self.api_key:
+            logger.error("❌ No API key provided!")
             raise ValueError("Gemini API key is required")
         
-        # Configure Gemini
-        genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel(self.model_name)
+        logger.info(f"🔑 API key present: {self.api_key[:10]}...")
+        
+        try:
+            # Configure Gemini
+            genai.configure(api_key=self.api_key)
+            logger.info("✅ Gemini configured")
+            
+            self.model = genai.GenerativeModel(self.model_name)
+            logger.info("✅ GenerativeModel created")
+            
+            # Test de conexión
+            logger.info("🧪 Testing Gemini connection...")
+            test_response = self.model.generate_content("Test")
+            logger.info(f"✅ Gemini connection test successful: {test_response.text[:50]}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error initializing Gemini: {e}", exc_info=True)
+            raise
     
     async def generate_response(
         self,
@@ -41,44 +63,61 @@ class GeminiProvider(LLMProvider):
         Generate a response using Gemini API
         """
         try:
-            logger.info(f"Sending request to Gemini model: {self.model_name}")
+            logger.info("="*50)
+            logger.info(f"🔵 GEMINI REQUEST START")
+            logger.info(f"Model: {self.model_name}")
+            logger.info(f"Temperature: {temperature}, Max tokens: {max_tokens}")
+            logger.info(f"Messages count: {len(messages)}")
+            logger.info(f"Last message preview: {messages[-1]['content'][:200] if messages else 'No messages'}")
             
             # Convert messages to Gemini format
             gemini_messages = []
-            for msg in messages:
+            for i, msg in enumerate(messages):
                 role = "user" if msg["role"] == "user" else "model"
                 gemini_messages.append({
                     "role": role,
                     "parts": [msg["content"]]
                 })
+                logger.debug(f"Message {i} - Role: {role}, Length: {len(msg['content'])}")
             
             # Start chat
+            logger.info("📤 Starting chat with Gemini...")
             chat = self.model.start_chat(history=gemini_messages[:-1] if len(gemini_messages) > 1 else [])
+            logger.info(f"✅ Chat started. History length: {len(gemini_messages) - 1}")
             
-            # Generate response con configuración mejorada
+            # Generate response
             generation_config = genai.types.GenerationConfig(
                 temperature=temperature,
                 max_output_tokens=max_tokens,
-                response_mime_type="application/json" if response_format else "application/json",
+                response_mime_type="application/json",
                 candidate_count=1,
-                stop_sequences=None
             )
             
             # Send the last user message
             last_message = gemini_messages[-1]["parts"][0] if gemini_messages else ""
             
-            # Agregar recordatorio de formato JSON al mensaje
+            # Agregar recordatorio de formato JSON
             if not last_message.strip().endswith("Responde SOLO con JSON válido."):
                 last_message += "\n\nResponde SOLO con JSON válido siguiendo el formato especificado."
             
-            response = await chat.send_message_async(
-                last_message,
-                generation_config=generation_config
-            )
+            logger.info(f"📨 Sending message to Gemini (length: {len(last_message)})...")
+            
+            # Usar versión síncrona (mejor compatibilidad)
+            try:
+                response = chat.send_message(
+                    last_message,
+                    generation_config=generation_config
+                )
+                logger.info("✅ Response received from Gemini")
+            except Exception as send_error:
+                logger.error(f"❌ Error sending message: {send_error}")
+                raise
             
             # Extract content
+            logger.info("🔍 Extracting content from response...")
             content = self._extract_content(response)
-            logger.info(f"Raw Gemini response length: {len(content)} chars")
+            logger.info(f"✅ Content extracted. Length: {len(content)} chars")
+            logger.info(f"Content preview: {content[:300]}")
             
             # Try to parse as JSON
             try:
@@ -92,12 +131,18 @@ class GeminiProvider(LLMProvider):
                     content = content[:-3]
                 content = content.strip()
                 
+                logger.info("🔄 Attempting to parse JSON...")
                 parsed = json.loads(content)
-                logger.info(f"Successfully parsed: {parsed.get('intention', 'unknown')}, products: {len(parsed.get('products', []))}")
+                logger.info(f"✅ JSON parsed successfully!")
+                logger.info(f"Intention: {parsed.get('intention', 'unknown')}")
+                logger.info(f"Products: {len(parsed.get('products', []))}")
+                logger.info(f"Response text: {parsed.get('response_text', '')[:100]}")
+                logger.info("="*50)
                 return parsed
+                
             except json.JSONDecodeError as e:
-                logger.error(f"JSON decode error: {e}")
-                logger.error(f"Content: {content[:500]}")
+                logger.error(f"❌ JSON decode error: {e}")
+                logger.error(f"Content that failed to parse: {content[:500]}")
                 
                 # Intentar extraer JSON del texto
                 import re
@@ -105,11 +150,12 @@ class GeminiProvider(LLMProvider):
                 if json_match:
                     try:
                         parsed = json.loads(json_match.group())
-                        logger.info("Recovered JSON from text")
+                        logger.warning("⚠️ Recovered JSON from text using regex")
                         return parsed
-                    except:
-                        pass
+                    except Exception as regex_error:
+                        logger.error(f"❌ Regex recovery failed: {regex_error}")
                 
+                logger.warning("⚠️ Returning fallback response due to JSON error")
                 return {
                     "intention": "other",
                     "response_text": "Disculpa, hubo un error. ¿Puedes repetir tu pedido?",
@@ -118,27 +164,43 @@ class GeminiProvider(LLMProvider):
                 }
                     
         except Exception as e:
-            logger.error(f"Error calling Gemini API: {e}", exc_info=True)
+            logger.error("="*50)
+            logger.error(f"❌ CRITICAL ERROR in generate_response")
+            logger.error(f"Error type: {type(e).__name__}")
+            logger.error(f"Error message: {str(e)}")
+            logger.error(f"Full traceback:", exc_info=True)
+            logger.error("="*50)
             return None
 
     def _extract_content(self, response) -> str:
         """Extract content from Gemini response"""
         try:
+            logger.debug("Attempting to extract content...")
+            
             if hasattr(response, 'text'):
+                logger.debug("Using response.text")
                 return response.text
+                
             elif hasattr(response, 'candidates') and response.candidates:
+                logger.debug(f"Found {len(response.candidates)} candidates")
                 candidate = response.candidates[0]
+                
                 if hasattr(candidate, 'content') and candidate.content:
                     if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                        logger.debug("Using candidate.content.parts[0].text")
                         return candidate.content.parts[0].text
                     else:
+                        logger.debug("Using str(candidate.content)")
                         return str(candidate.content)
                 else:
+                    logger.debug("Using str(candidate)")
                     return str(candidate)
             else:
+                logger.warning("No standard attributes found, using str(response)")
                 return str(response)
+                
         except Exception as e:
-            logger.error(f"Error extracting content: {e}")
+            logger.error(f"Error in _extract_content: {e}", exc_info=True)
             return ""
     
     def build_system_prompt(

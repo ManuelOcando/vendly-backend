@@ -55,45 +55,57 @@ class LLMHandler(BaseWhatsAppHandler):
         tenant_name = message_data.get("tenant_name", "Tienda")
         
         try:
-            logger.info(f"LLMHandler processing message: '{user_message[:50]}...' for tenant {tenant_id}")
+            logger.info("="*60)
+            logger.info(f"🟢 LLMHANDLER START - Message: '{user_message[:100]}'")
+            logger.info(f"Tenant: {tenant_id}, Phone: {phone}")
+            logger.info("="*60)
             
             # Get available products
+            logger.info("📦 Getting available products...")
             available_products = await self._get_available_products(tenant_id)
+            logger.info(f"✅ Found {len(available_products)} products")
             
             # Get current cart from session
             session_data = session.get("session_data", {}) or {}
             current_cart = session_data.get("cart", [])
             current_state = session.get("current_state", "initial")
+            logger.info(f"🛒 Current cart: {len(current_cart)} items, State: {current_state}")
             
             # Get conversation history
             conversation_history = session_data.get("history", [])
+            logger.info(f"💬 History length: {len(conversation_history)}")
             
             # Get tenant personality config
+            logger.info("👤 Getting personality config...")
             personality = await self._get_personality(tenant_id)
+            logger.info(f"✅ Personality: {personality.get('tone', 'casual')}")
             
             # Get LLM provider (supports tenant-specific config)
+            logger.info("🤖 Getting LLM provider...")
             tenant_config = await self._get_tenant_llm_config(tenant_id)
             provider = get_llm_provider(tenant_config)
             
             if not provider:
-                logger.error("Could not create LLM provider")
+                logger.error("❌ Could not create LLM provider")
                 return self._get_fallback_message()
-            
-            # Get available products
-            available_products = await self._get_available_products(tenant_id)
+            logger.info(f"✅ Provider created: {type(provider).__name__}")
             
             # Build prompts using provider's methods
+            logger.info("📝 Building system prompt...")
             system_prompt = provider.build_system_prompt(
                 store_name=tenant_name,
                 personality=personality,
                 available_products=available_products
             )
+            logger.info(f"✅ System prompt built ({len(system_prompt)} chars)")
             
+            logger.info("📝 Building context prompt...")
             context_prompt = provider.build_context_prompt(
                 current_cart=current_cart,
                 conversation_history=conversation_history,
                 current_state=current_state
             )
+            logger.info(f"✅ Context prompt built ({len(context_prompt)} chars)")
             
             # Call LLM
             messages = [
@@ -101,21 +113,32 @@ class LLMHandler(BaseWhatsAppHandler):
                 {"role": "system", "content": context_prompt},
                 {"role": "user", "content": user_message}
             ]
+            logger.info(f"📤 Calling LLM with {len(messages)} messages...")
             
             llm_response = await provider.generate_response(
                 messages=messages,
                 temperature=0.7,
-                max_tokens=800,
+                max_tokens=2000,
                 response_format={"type": "json_object"}
             )
             
             # Check if there was an LLM error
             if not llm_response:
-                logger.error("LLM returned no response")
+                logger.error("❌ LLM returned None!")
+                return self._get_fallback_message()
+            
+            if not isinstance(llm_response, dict):
+                logger.error(f"❌ LLM returned invalid type: {type(llm_response)}")
                 return self._get_fallback_message()
             
             if llm_response.get("llm_error"):
+                logger.warning(f"⚠️ LLM returned error flag: {llm_response.get('response_text', 'Unknown')}")
                 return llm_response.get("response_text", self._get_fallback_message())
+            
+            logger.info(f"✅ LLM response received!")
+            logger.info(f"   Intention: {llm_response.get('intention', 'unknown')}")
+            logger.info(f"   Products: {len(llm_response.get('products', []))}")
+            logger.info(f"   Response text: {llm_response.get('response_text', '')[:100]}")
             
             # Process the LLM response
             intention = llm_response.get("intention", "other")
@@ -124,42 +147,51 @@ class LLMHandler(BaseWhatsAppHandler):
             
             # Check if any product requires confirmation
             if intention == "needs_confirmation" or self._any_product_needs_confirmation(products, provider):
+                logger.info(f"🔄 Handling needs_confirmation for {len(products)} products")
                 return await self._handle_needs_confirmation(
                     products, response_text, session, tenant_id, phone
                 )
             
             elif intention == "add_to_cart" and products:
+                logger.info(f"🛒 Handling add_to_cart for {len(products)} products")
                 return await self._handle_add_to_cart(
                     products, response_text, session, tenant_id, phone, current_cart
                 )
             
             elif intention == "remove_from_cart":
+                logger.info("🗑️ Handling remove_from_cart")
                 return await self._handle_remove_from_cart(
                     products, response_text, session, current_cart
                 )
             
             elif intention == "show_menu":
-                # Let the MenuHandler handle this by returning None
+                logger.info("📋 Handling show_menu - delegating to MenuHandler")
                 return None
             
             elif intention == "confirm_order":
+                logger.info("✅ Handling confirm_order")
                 return await self._handle_confirm_order(
                     response_text, session, current_cart
                 )
             
             elif intention == "cancel":
+                logger.info("❌ Handling cancel")
                 return await self._handle_cancel(response_text, session)
             
             else:
+                logger.info(f"💬 Handling other intention: {intention}")
                 # Just return the response text from LLM
                 # Update conversation history
                 await self._update_history(session, user_message, response_text)
                 return response_text
                 
         except Exception as e:
-            logger.error(f"Error in LLMHandler: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+            logger.error("="*60)
+            logger.error(f"❌ CRITICAL ERROR in LLMHandler.handle")
+            logger.error(f"Error type: {type(e).__name__}")
+            logger.error(f"Error message: {str(e)}")
+            logger.error(f"Full traceback:", exc_info=True)
+            logger.error("="*60)
             return self._get_fallback_message()
     
     async def _get_available_products(self, tenant_id: str) -> List[Dict[str, Any]]:
