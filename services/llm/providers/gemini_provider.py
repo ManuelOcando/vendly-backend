@@ -34,7 +34,7 @@ class GeminiProvider(LLMProvider):
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.7,
-        max_tokens: int = 1000,
+        max_tokens: int = 2000,
         response_format: Optional[Dict[str, str]] = None
     ) -> Optional[Dict[str, Any]]:
         """
@@ -44,7 +44,6 @@ class GeminiProvider(LLMProvider):
             logger.info(f"Sending request to Gemini model: {self.model_name}")
             
             # Convert messages to Gemini format
-            # Gemini uses: user, model (instead of user, assistant)
             gemini_messages = []
             for msg in messages:
                 role = "user" if msg["role"] == "user" else "model"
@@ -56,59 +55,91 @@ class GeminiProvider(LLMProvider):
             # Start chat
             chat = self.model.start_chat(history=gemini_messages[:-1] if len(gemini_messages) > 1 else [])
             
-            # Generate response
+            # Generate response con configuración mejorada
             generation_config = genai.types.GenerationConfig(
                 temperature=temperature,
                 max_output_tokens=max_tokens,
-                response_mime_type="application/json" if response_format else None
+                response_mime_type="application/json" if response_format else "application/json",
+                candidate_count=1,
+                stop_sequences=None
             )
             
             # Send the last user message
             last_message = gemini_messages[-1]["parts"][0] if gemini_messages else ""
-            response = chat.send_message(
+            
+            # Agregar recordatorio de formato JSON al mensaje
+            if not last_message.strip().endswith("Responde SOLO con JSON válido."):
+                last_message += "\n\nResponde SOLO con JSON válido siguiendo el formato especificado."
+            
+            response = await chat.send_message_async(
                 last_message,
                 generation_config=generation_config
             )
             
-            # Extract content from Gemini response structure
-            try:
-                # Gemini 2.5 Flash response structure: response.candidates[0].content.parts[0].text
-                if hasattr(response, 'text'):
-                    content = response.text
-                elif hasattr(response, 'candidates') and response.candidates:
-                    candidate = response.candidates[0]
-                    if hasattr(candidate, 'content') and candidate.content:
-                        if hasattr(candidate.content, 'parts') and candidate.content.parts:
-                            content = candidate.content.parts[0].text
-                        else:
-                            content = str(candidate.content)
-                    else:
-                        content = str(candidate)
-                else:
-                    content = str(response)
-                
-                logger.info(f"Raw Gemini response: {content[:300]}")
-            except Exception as e:
-                logger.error(f"Error extracting content from response: {e}")
-                content = str(response) if response else ""
+            # Extract content
+            content = self._extract_content(response)
+            logger.info(f"Raw Gemini response length: {len(content)} chars")
             
             # Try to parse as JSON
             try:
+                # Limpiar posible texto antes/después del JSON
+                content = content.strip()
+                if content.startswith("```json"):
+                    content = content[7:]
+                if content.startswith("```"):
+                    content = content[3:]
+                if content.endswith("```"):
+                    content = content[:-3]
+                content = content.strip()
+                
                 parsed = json.loads(content)
-                logger.info(f"Successfully parsed Gemini response: {parsed.get('intention', 'unknown')}")
+                logger.info(f"Successfully parsed: {parsed.get('intention', 'unknown')}, products: {len(parsed.get('products', []))}")
                 return parsed
-            except json.JSONDecodeError:
-                logger.warning(f"Response is not valid JSON: {content[:200]}")
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error: {e}")
+                logger.error(f"Content: {content[:500]}")
+                
+                # Intentar extraer JSON del texto
+                import re
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    try:
+                        parsed = json.loads(json_match.group())
+                        logger.info("Recovered JSON from text")
+                        return parsed
+                    except:
+                        pass
+                
                 return {
                     "intention": "other",
-                    "response_text": content,
+                    "response_text": "Disculpa, hubo un error. ¿Puedes repetir tu pedido?",
                     "products": [],
                     "questions": []
                 }
-                
+                    
         except Exception as e:
-            logger.error(f"Error calling Gemini API: {e}")
+            logger.error(f"Error calling Gemini API: {e}", exc_info=True)
             return None
+
+    def _extract_content(self, response) -> str:
+        """Extract content from Gemini response"""
+        try:
+            if hasattr(response, 'text'):
+                return response.text
+            elif hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'content') and candidate.content:
+                    if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                        return candidate.content.parts[0].text
+                    else:
+                        return str(candidate.content)
+                else:
+                    return str(candidate)
+            else:
+                return str(response)
+        except Exception as e:
+            logger.error(f"Error extracting content: {e}")
+            return ""
     
     def build_system_prompt(
         self,
@@ -123,135 +154,92 @@ class GeminiProvider(LLMProvider):
         use_emojis = personality.get("use_emojis", True)
         greeting_style = personality.get("greeting_style", "¡Hola! 👋 Bienvenido a {store_name}")
         
-        # Format products list
+        # Format products list (limit to top 30 for brevity)
         products_text = "\n".join([
             f"- {p.get('name', 'Producto')}: ${p.get('price', 0):.2f}"
-            for p in available_products[:20]
+            for p in available_products[:30]
         ])
         
-        emoji_instruction = "Usa emojis apropiados." if use_emojis else "No uses emojis, mantén profesional."
+        emoji_instruction = "Usa emojis apropiados." if use_emojis else "No uses emojis."
         
-        # Build prompt using string concatenation to avoid f-string issues
-        prompt_parts = [
-            f"Eres un asistente virtual de {store_name}.",
-            "",
-            "PERSONALIDAD:",
-            f"- Tono: {tone}",
-            f"- {emoji_instruction}",
-            f"- Saludo típico: {greeting_style.format(store_name=store_name)}",
-            "",
-            "PRODUCTOS DISPONIBLES:",
-            products_text,
-            "",
-            "INSTRUCCIONES CRÍTICAS:",
-            '1. SOLO vende productos de la lista anterior. NO inventes productos que no existen.',
-            '2. SIEMPRE que haya modificaciones (ej: "sin cebolla", "con queso extra", "doble", "sin salsa"), debes pedir confirmación ANTES de agregar.',
-            '3. Las modificaciones son cambios a UN producto, NO productos separados.',
-            '4. Usa "needs_confirmation" como intention cuando haya modificaciones O baja confianza (< 0.8).',
-            "5. Mantén respuestas cortas (máximo 2-3 oraciones) para WhatsApp.",
-            "",
-            "EJEMPLOS DETALLADOS:",
-            "",
-            "--- CASO 1: Una modificación ---",
-            'Cliente: "quiero una hamburguesa sin cebolla"',
-            "Producto: hamburguesa",
-            'Modificaciones: ["sin cebolla"]',
-            '→ intention: "needs_confirmation"',
-            "→ requires_confirmation: true",
-            "",
-            "--- CASO 2: MÚLTIPLES modificaciones en UN producto ---",
-            'Cliente: "dame una hamburguesa sin cebolla y con queso extra"',
-            "Producto: hamburguesa",
-            'Modificaciones: ["sin cebolla", "con queso extra"]  ← AMBAS son modificaciones de la misma hamburguesa',
-            '→ intention: "needs_confirmation"',
-            "→ requires_confirmation: true",
-            "",
-            "--- CASO 3: Múltiples productos con modificaciones ---",
-            'Cliente: "quiero una hamburguesa sin cebolla y un perro caliente sin salsa"',
-            'Producto 1: hamburguesa → modifications: ["sin cebolla"]',
-            'Producto 2: perro caliente → modifications: ["sin salsa"]',
-            '→ intention: "needs_confirmation"',
-            "→ requires_confirmation: true para AMBOS",
-            "",
-            "--- CASO 4: Sin modificaciones (agregar directo) ---",
-            'Cliente: "quiero 2 hamburguesas y una soda"',
-            '→ intention: "add_to_cart"',
-            "→ modifications: [] (vacío para todos)",
-            "→ requires_confirmation: false",
-            "",
-            "--- CASO 5: Detectando modificaciones correctamente ---",
-            'Cliente: "una hamburguesa doble con bacon y sin cebolla"',
-            "Producto: hamburguesa",
-            'Modificaciones: ["doble", "con bacon", "sin cebolla"]',
-            '→ intention: "needs_confirmation"',
-            "",
-            "--- CASO 6: Múltiples unidades del mismo producto con diferentes modificaciones ---",
-            'Cliente: "quiero 3 hamburguesas: 1 sin cebolla, otra sin vegetales y sin salsa, y otra con todo"',
-            "Productos:",
-            '- hamburguesa #1: quantity=1, modifications=["sin cebolla"]',
-            '- hamburguesa #2: quantity=1, modifications=["sin vegetales", "sin salsa"]',
-            '- hamburguesa #3: quantity=1, modifications=[] (con todo = sin modificaciones)',
-            '→ intention: "needs_confirmation"',
-            "",
-            "--- CASO 7: Múltiples productos con modificaciones diferentes ---",
-            'Cliente: "quiero 2 perros calientes: uno con queso extra y sin lechuga, y otro con queso extra"',
-            "Productos:",
-            '- perro caliente #1: quantity=1, modifications=["con queso extra", "sin lechuga"]',
-            '- perro caliente #2: quantity=1, modifications=["con queso extra"]',
-            '→ intention: "needs_confirmation"',
-            "",
-            "--- CASO 8: Confirmación de pedido complejo ---",
-            'Cliente: "quiero 3 hamburguesas y 2 perros. 1 hamburguesa sin cebolla, otra sin vegetales y sin salsa, y otra con todo. Los perros llevan queso extra pero uno sin lechuga"',
-            'Bot debe resumir: "Para confirmar: 3 hamburguesas - 1 sin cebolla, 1 sin vegetales y sin salsa, 1 con todo. 2 perros - 1 con queso extra y sin lechuga, 1 con queso extra. ¿Confirmas?"',
-            '→ intention: "needs_confirmation"',
-            '→ confirmation_message: "Para confirmar: 3 hamburguesas (1 sin cebolla, 1 sin vegetales/sin salsa, 1 con todo) y 2 perros (1 con queso extra/sin lechuga, 1 con queso extra). ¿Confirmas?"',
-            "",
-            "--- CASO 9: Modificación durante confirmación ---",
-            'Cliente (confirmando): "no quiero cambiar la orden" o "quiero modificar solo una cosa"',
-            '→ intention: "modify_order" o "cancel_confirmation"',
-            '→ response_text: "OK, dime qué quieres cambiar" o "Dime qué deseas modificar"',
-            "",
-            "--- CASO 10: Agregar item nuevo durante modificación ---",
-            'Cliente: "quiero que los perros lleven salsa tártara y además también quiero una coca de 2 litros"',
-            '→ Detecta: Agregar salsa tártara a perros existentes + nuevo producto "coca 2 litros"',
-            '→ intention: "needs_confirmation" (si coca requiere confirmación por modificaciones)',
-            "→ products: [",
-            '  {"name": "coca 2 litros", "quantity": 1, "modifications": []},',
-            '  {"name": "perro caliente", "quantity": 2, "modifications": ["con salsa tártara"]} (actualización)',
-            "]",
-            "",
-            "REGLAS DE DETECCIÓN DE MODIFICACIONES:",
-            '- "sin [algo]" → SIEMPRE es modificación',
-            '- "con [algo] extra" → SIEMPRE es modificación',
-            '- "doble" → SIEMPRE es modificación',
-            '- "[adjetivo]" aplicado al producto → es modificación',
-            "",
-            "REGLAS DE CONFIRMACIÓN:",
-            "- SI modifications array tiene ALGO → intention MUST BE \"needs_confirmation\"",
-            "- SI confidence < 0.8 → intention MUST BE \"needs_confirmation\"",
-            "",
-            "FORMATO JSON REQUERIDO:",
-            "{",
-            '  "intention": "add_to_cart|needs_confirmation|show_menu|ask_question|confirm_order|cancel|other",',
-            '  "response_text": "Mensaje amigable para el cliente",',
-            '  "products": [',
-            "    {",
-            '      "name": "nombre exacto del producto",',
-            '      "quantity": 1,',
-            '      "modifications": ["modificación 1", "modificación 2"],',
-            '      "confidence": 0.95,',
-            '      "requires_confirmation": true',
-            "    }",
-            "  ],",
-            '  "confirmation_message": "¿Confirmas agregar [producto] con [modificaciones] por $[precio]? Responde sí para confirmar.",',
-            '  "questions": [],',
-            '  "suggested_actions": ["menu", "confirmar", "cancelar"]',
-            "}",
-            "",
-            'REGLA DE ORO: Si el cliente dice "producto X con/sin Y", Y SIEMPRE es una modificación de X, NUNCA un producto separado.'
-        ]
-        
-        prompt = "\n".join(prompt_parts)
+        prompt = f"""Eres un asistente de ventas para {store_name}.
+
+PERSONALIDAD:
+- Tono: {tone}
+- {emoji_instruction}
+- Saludo: {greeting_style.format(store_name=store_name)}
+- Respuestas cortas (máx 2-3 líneas)
+
+PRODUCTOS DISPONIBLES:
+{products_text}
+
+REGLAS CRÍTICAS:
+1. SOLO vende productos de la lista
+2. CUALQUIER modificación → SIEMPRE usar "needs_confirmation"
+3. Modificaciones incluyen: "sin X", "con X extra", "doble", etc.
+4. Si confidence < 0.8 → usar "needs_confirmation"
+
+EJEMPLOS RÁPIDOS:
+
+Caso 1 - Modificación simple:
+"hamburguesa sin cebolla"
+→ {{"intention": "needs_confirmation", "products": [{{"name": "hamburguesa", "quantity": 1, "modifications": ["sin cebolla"], "requires_confirmation": true}}]}}
+
+Caso 2 - Múltiples modificaciones UN producto:
+"hamburguesa sin cebolla y con queso extra"
+→ {{"intention": "needs_confirmation", "products": [{{"name": "hamburguesa", "quantity": 1, "modifications": ["sin cebolla", "con queso extra"], "requires_confirmation": true}}]}}
+
+Caso 3 - Varios productos con modificaciones:
+"2 hamburguesas sin cebolla y un perro sin salsa"
+→ {{"intention": "needs_confirmation", "products": [
+  {{"name": "hamburguesa", "quantity": 2, "modifications": ["sin cebolla"], "requires_confirmation": true}},
+  {{"name": "perro caliente", "quantity": 1, "modifications": ["sin salsa"], "requires_confirmation": true}}
+]}}
+
+Caso 4 - Sin modificaciones:
+"2 hamburguesas y una coca"
+→ {{"intention": "add_to_cart", "products": [
+  {{"name": "hamburguesa", "quantity": 2, "modifications": [], "requires_confirmation": false}},
+  {{"name": "coca", "quantity": 1, "modifications": [], "requires_confirmation": false}}
+]}}
+
+Caso 5 - COMPLEJO: Mismo producto, diferentes modificaciones:
+"3 hamburguesas: 1 sin cebolla, otra sin vegetales y sin salsa, y otra normal"
+→ {{"intention": "needs_confirmation", "products": [
+  {{"name": "hamburguesa", "quantity": 1, "modifications": ["sin cebolla"], "requires_confirmation": true}},
+  {{"name": "hamburguesa", "quantity": 1, "modifications": ["sin vegetales", "sin salsa"], "requires_confirmation": true}},
+  {{"name": "hamburguesa", "quantity": 1, "modifications": [], "requires_confirmation": false}}
+], "confirmation_message": "Para confirmar: 3 hamburguesas (1 sin cebolla, 1 sin vegetales/salsa, 1 normal). ¿Correcto?"}}
+
+Caso 6 - MUY COMPLEJO: Múltiples productos con variaciones:
+"quiero 3 hamburguesas y 2 perros. 1 hamburguesa sin cebolla, otra sin vegetales, otra normal. Los perros con queso extra pero uno sin lechuga"
+→ {{"intention": "needs_confirmation", "products": [
+  {{"name": "hamburguesa", "quantity": 1, "modifications": ["sin cebolla"], "requires_confirmation": true}},
+  {{"name": "hamburguesa", "quantity": 1, "modifications": ["sin vegetales"], "requires_confirmation": true}},
+  {{"name": "hamburguesa", "quantity": 1, "modifications": [], "requires_confirmation": false}},
+  {{"name": "perro caliente", "quantity": 1, "modifications": ["con queso extra", "sin lechuga"], "requires_confirmation": true}},
+  {{"name": "perro caliente", "quantity": 1, "modifications": ["con queso extra"], "requires_confirmation": true}}
+], "confirmation_message": "📝 Para confirmar:\n• 3 hamburguesas: 1 sin cebolla, 1 sin vegetales, 1 normal\n• 2 perros: 1 con queso extra/sin lechuga, 1 con queso extra\n¿Correcto?"}}
+
+FORMATO JSON OBLIGATORIO:
+{{
+  "intention": "add_to_cart|needs_confirmation|show_menu|ask_question|confirm_order|cancel|other",
+  "response_text": "Mensaje corto y amigable",
+  "products": [
+    {{
+      "name": "nombre_exacto",
+      "quantity": 1,
+      "modifications": ["mod1", "mod2"],
+      "confidence": 0.95,
+      "requires_confirmation": true
+    }}
+  ],
+  "confirmation_message": "Resumen claro del pedido",
+  "questions": [],
+  "suggested_actions": ["confirmar", "cancelar", "menu"]
+}}
+
+REGLA DE ORO: Si hay CUALQUIER modificación o duda → "needs_confirmation" SIEMPRE."""
         
         return prompt
     
