@@ -70,7 +70,27 @@ class GeminiProvider(LLMProvider):
                 generation_config=generation_config
             )
             
-            content = response.text
+            # Extract content from Gemini response structure
+            try:
+                # Gemini 2.5 Flash response structure: response.candidates[0].content.parts[0].text
+                if hasattr(response, 'text'):
+                    content = response.text
+                elif hasattr(response, 'candidates') and response.candidates:
+                    candidate = response.candidates[0]
+                    if hasattr(candidate, 'content') and candidate.content:
+                        if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                            content = candidate.content.parts[0].text
+                        else:
+                            content = str(candidate.content)
+                    else:
+                        content = str(candidate)
+                else:
+                    content = str(response)
+                
+                logger.info(f"Raw Gemini response: {content[:300]}")
+            except Exception as e:
+                logger.error(f"Error extracting content from response: {e}")
+                content = str(response) if response else ""
             
             # Try to parse as JSON
             try:
