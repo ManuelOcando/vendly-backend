@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class GeminiProvider(LLMProvider):
     """Google Gemini LLM Provider"""
     
-    DEFAULT_MODEL = "gemini-2.5-flash-preview-05-20"
+    DEFAULT_MODEL = "gemini-1.5-flash"
     CONFIDENCE_THRESHOLD = 0.7
     
     def __init__(self, config: Dict[str, Any]):
