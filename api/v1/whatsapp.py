@@ -17,6 +17,19 @@ from services.whatsapp.meta_service import MetaWhatsAppService
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# Simple in-memory cache for processed message IDs (prevents duplicate webhook processing)
+_processed_message_ids = set()
+
+def _is_message_processed(message_id: str) -> bool:
+    """Check if a message has already been processed"""
+    if message_id in _processed_message_ids:
+        return True
+    # Add to cache (limit size to prevent memory issues)
+    if len(_processed_message_ids) > 1000:
+        _processed_message_ids.clear()
+    _processed_message_ids.add(message_id)
+    return False
+
 class MetaWhatsAppConfig(BaseModel):
     phone_number_id: str
     access_token: str
@@ -255,8 +268,14 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
                     for message in value.get("messages", []):
                         phone = message.get("from")
                         text = message.get("text", {}).get("body", "")
+                        message_id = message.get("id")  # Unique message ID from Meta
                         
-                        logger.info(f"Message details - From: {phone}, Body: {text}")
+                        logger.info(f"Message details - ID: {message_id}, From: {phone}, Body: {text}")
+                        
+                        # DEDUPLICATION: Skip if we've already processed this message
+                        if message_id and _is_message_processed(message_id):
+                            logger.info(f"Skipping duplicate message: {message_id}")
+                            continue
                         
                         # Buscar tenant por número de teléfono
                         from db.supabase import get_supabase_client
