@@ -270,7 +270,12 @@ class ConfirmationHandler(BaseWhatsAppHandler):
         # Check if we're awaiting confirmation
         session_data = session.get("session_data", {}) or {}
         is_awaiting = session_data.get("awaiting_confirmation", False)
-        has_pending = session_data.get("pending_product") is not None
+        
+        # Support both single product (backward compat) and multiple products
+        has_pending = (
+            session_data.get("pending_products") is not None or 
+            session_data.get("pending_product") is not None
+        )
         
         if not (is_awaiting and has_pending):
             return False
@@ -279,16 +284,26 @@ class ConfirmationHandler(BaseWhatsAppHandler):
         return any(keyword in message for keyword in self.CONFIRM_KEYWORDS + self.REJECT_KEYWORDS)
     
     async def handle(self, message_data: Dict[str, Any]) -> Optional[str]:
-        """Handle confirmation or rejection of pending product"""
+        """Handle confirmation or rejection of pending product(s)"""
         message = message_data.get("message", "").lower().strip()
         session = message_data.get("session", {})
         
         session_data = session.get("session_data", {}) or {}
-        pending_product = session_data.get("pending_product", {})
         current_cart = session_data.get("cart", [])
         
-        if not pending_product:
-            return "No hay ningún producto pendiente de confirmación."
+        # Support both single product (backward compat) and multiple products
+        pending_products = session_data.get("pending_products")
+        if not pending_products:
+            # Try old format (backward compatibility)
+            single_product = session_data.get("pending_product")
+            if single_product:
+                pending_products = [single_product]
+            else:
+                return "No hay ningún producto pendiente de confirmación."
+        
+        # Ensure it's a list
+        if not isinstance(pending_products, list):
+            pending_products = [pending_products]
         
         # Check if confirmed or rejected
         is_confirmed = any(keyword in message for keyword in self.CONFIRM_KEYWORDS)
@@ -297,26 +312,38 @@ class ConfirmationHandler(BaseWhatsAppHandler):
         session_id = session.get("id")
         
         if is_confirmed:
-            # Add product to cart
-            product_id = pending_product.get("product_id")
-            existing = next((item for item in current_cart if item["product_id"] == product_id), None)
+            # Add all pending products to cart
+            added_products_text = []
             
-            if existing:
-                existing["quantity"] += pending_product.get("quantity", 1)
-                if pending_product.get("modifications"):
-                    existing.setdefault("modifications", []).extend(pending_product["modifications"])
-            else:
-                cart_item = {
-                    "product_id": product_id,
-                    "name": pending_product["name"],
-                    "price": pending_product["price"],
-                    "quantity": pending_product.get("quantity", 1),
-                    "modifications": pending_product.get("modifications", [])
-                }
-                current_cart.append(cart_item)
+            for pending_product in pending_products:
+                product_id = pending_product.get("product_id")
+                existing = next((item for item in current_cart if item["product_id"] == product_id), None)
+                
+                if existing:
+                    existing["quantity"] += pending_product.get("quantity", 1)
+                    if pending_product.get("modifications"):
+                        existing.setdefault("modifications", []).extend(pending_product["modifications"])
+                else:
+                    cart_item = {
+                        "product_id": product_id,
+                        "name": pending_product["name"],
+                        "price": pending_product["price"],
+                        "quantity": pending_product.get("quantity", 1),
+                        "modifications": pending_product.get("modifications", [])
+                    }
+                    current_cart.append(cart_item)
+                
+                # Build added product text
+                modifications = pending_product.get("modifications", [])
+                mod_text = ""
+                if modifications:
+                    mod_text = f" ({', '.join(modifications)})"
+                
+                added_products_text.append(f"✅ {pending_product['name']}{mod_text} x{pending_product.get('quantity', 1)}")
             
-            # Clear pending product and update state
-            session_data["pending_product"] = None
+            # Clear pending products and update state
+            session_data["pending_products"] = None
+            session_data["pending_product"] = None  # Clear both formats
             session_data["awaiting_confirmation"] = False
             session_data["cart"] = current_cart
             
@@ -332,13 +359,9 @@ class ConfirmationHandler(BaseWhatsAppHandler):
                 for item in current_cart
             ])
             
-            modifications = pending_product.get("modifications", [])
-            mod_text = ""
-            if modifications:
-                mod_text = f" {' '.join(modifications)}"
+            added_text = "\n".join(added_products_text)
             
-            return f"""✅ *Agregado:*
-{pending_product['name']}{mod_text} x{pending_product.get('quantity', 1)}
+            return f"""{added_text}
 
 🛒 *Tu carrito:*
 {cart_text}
@@ -348,14 +371,15 @@ class ConfirmationHandler(BaseWhatsAppHandler):
 ¿Deseas agregar otro producto o confirmar el pedido?"""
         
         elif is_rejected:
-            # Clear pending product
+            # Clear pending products (both formats)
+            session_data["pending_products"] = None
             session_data["pending_product"] = None
             session_data["awaiting_confirmation"] = False
             
             if session_id:
                 await self.update_session_state(session_id, "ordering", session_data)
             
-            return """❌ Producto descartado.
+            return """❌ Producto(s) descartado(s).
 
 ¿Deseas intentar con otro producto? Escribe:
 • "menu" para ver la lista

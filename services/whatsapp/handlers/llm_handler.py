@@ -237,49 +237,60 @@ class LLMHandler(BaseWhatsAppHandler):
         if not session_id:
             return "Lo siento, no pudo procesar tu pedido. Intenta nuevamente."
         
-        # Get the first product that needs confirmation
-        product = products[0] if products else None
-        
-        if not product:
+        if not products:
             return response_text or "¿Podrías especificar qué producto deseas?"
         
-        # Find the actual product in database
-        matched_product = await self._find_product_in_db(tenant_id, product.get("name", ""))
+        # Match all products in database
+        pending_products = []
+        products_list_text = []
+        total = 0
         
-        if not matched_product:
-            return f"No encontré el producto '{product.get('name', '')}'. ¿Podrías verificar el nombre?"
+        for product in products:
+            matched_product = await self._find_product_in_db(tenant_id, product.get("name", ""))
+            
+            if matched_product:
+                quantity = product.get("quantity", 1)
+                modifications = product.get("modifications", [])
+                price = matched_product["price"] * quantity
+                total += price
+                
+                pending_products.append({
+                    "product_id": matched_product["id"],
+                    "name": matched_product["name"],
+                    "price": matched_product["price"],
+                    "quantity": quantity,
+                    "modifications": modifications
+                })
+                
+                # Build product line
+                mod_text = ""
+                if modifications:
+                    mod_text = f" ({', '.join(modifications)})"
+                
+                products_list_text.append(f"• {matched_product['name']}{mod_text} x{quantity} - ${price:.2f}")
         
-        # Store pending product in session
-        pending_product = {
-            "product_id": matched_product["id"],
-            "name": matched_product["name"],
-            "price": matched_product["price"],
-            "quantity": product.get("quantity", 1),
-            "modifications": product.get("modifications", []),
-            "confidence": product.get("confidence", 1.0)
-        }
+        if not pending_products:
+            return f"No encontré los productos. ¿Podrías verificar los nombres?"
         
+        # Store pending products in session
         session_data = session.get("session_data", {}) or {}
-        session_data["pending_product"] = pending_product
+        session_data["pending_products"] = pending_products  # Store ALL products
         session_data["awaiting_confirmation"] = True
         
         await self.update_session_state(session_id, "awaiting_confirmation", session_data)
         
-        # Build confirmation message
-        modifications = product.get("modifications", [])
-        mod_text = ""
-        if modifications:
-            mod_text = f" {' '.join(modifications)}"
-        
-        total_price = matched_product["price"] * product.get("quantity", 1)
+        # Build confirmation message with all products
+        products_text = "\n".join(products_list_text)
         
         confirmation_msg = f"""🤔 *Confirmar pedido*
 
 ¿Deseas agregar:
-• {matched_product['name']}{mod_text} x{product.get('quantity', 1)} - ${total_price:.2f}?
+{products_text}
+
+💰 *Total:* ${total:.2f}
 
 Responde:
-✅ *si* / *confirmar* / *sí* - para agregar
+✅ *si* / *confirmar* / *sí* - para agregar todo
 ❌ *no* / *cancelar* - para descartar"""
         
         return confirmation_msg
