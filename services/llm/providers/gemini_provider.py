@@ -214,8 +214,8 @@ Cliente: "quiero que los perros lleven salsa tártara y además también quiero 
 → Detecta: Agregar salsa tártara a perros existentes + nuevo producto "coca 2 litros"
 → intention: "needs_confirmation" (si coca requiere confirmación por modificaciones)
 → products: [
-  {"name": "coca 2 litros", "quantity": 1, "modifications": []},
-  {"name": "perro caliente", "quantity": 2, "modifications": ["con salsa tártara"]} (actualización)
+  {{"name": "coca 2 litros", "quantity": 1, "modifications": []}},
+  {{"name": "perro caliente", "quantity": 2, "modifications": ["con salsa tártara"]}} (actualización)
 ]
 
 REGLAS DE DETECCIÓN DE MODIFICACIONES:
