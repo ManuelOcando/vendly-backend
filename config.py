@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     # Supabase
     SUPABASE_URL: str = ""
     SUPABASE_ANON_KEY: str = ""
-    SUPABASE_SERVICE_ROLE_KEY: str = ""
+    SUPABASE_SECRET_KEY: str = ""
     
     # Redis (Upstash)
     UPSTASH_REDIS_URL: str = ""
@@ -68,7 +68,7 @@ class Settings(BaseSettings):
             required_vars = [
                 "SUPABASE_URL",
                 "SUPABASE_ANON_KEY", 
-                "SUPABASE_SERVICE_ROLE_KEY"
+                "SUPABASE_SECRET_KEY"
             ]
             
             missing_vars = []
