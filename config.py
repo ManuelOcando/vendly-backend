@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     
     # Gemini Configuration (Set via environment variable GEMINI_API_KEY in production)
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = "gemini-1.5-flash-latest"
+    GEMINI_MODEL: str = "gemini-1.5-flash"
     
     # OpenRouter Configuration
     OPENROUTER_API_KEY: str = ""
