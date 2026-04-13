@@ -229,22 +229,22 @@ REGLAS DE CONFIRMACIÓN:
 - SI confidence < 0.8 → intention MUST BE "needs_confirmation"
 
 FORMATO JSON REQUERIDO:
-{{
+{{{{
   "intention": "add_to_cart|needs_confirmation|show_menu|ask_question|confirm_order|cancel|other",
   "response_text": "Mensaje amigable para el cliente",
   "products": [
-    {{
+    {{{{
       "name": "nombre exacto del producto",
       "quantity": 1,
       "modifications": ["modificación 1", "modificación 2"],
       "confidence": 0.95,
       "requires_confirmation": true
-    }}
+    }}}
   ],
   "confirmation_message": "¿Confirmas agregar [producto] con [modificaciones] por $[precio]? Responde sí para confirmar.",
   "questions": [],
   "suggested_actions": ["menu", "confirmar", "cancelar"]
-}}
+}}}}
 
 REGLA DE ORO: Si el cliente dice "producto X con/sin Y", Y SIEMPRE es una modificación de X, NUNCA un producto separado."""
         
