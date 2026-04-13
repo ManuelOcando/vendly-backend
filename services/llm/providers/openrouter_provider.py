@@ -171,6 +171,41 @@ Producto: hamburguesa
 Modificaciones: ["doble", "con bacon", "sin cebolla"]
 → intention: "needs_confirmation"
 
+--- CASO 6: Múltiples unidades del mismo producto con diferentes modificaciones ---
+Cliente: "quiero 3 hamburguesas: 1 sin cebolla, otra sin vegetales y sin salsa, y otra con todo"
+Productos:
+- hamburguesa #1: quantity=1, modifications=["sin cebolla"]
+- hamburguesa #2: quantity=1, modifications=["sin vegetales", "sin salsa"]
+- hamburguesa #3: quantity=1, modifications=[] (con todo = sin modificaciones)
+→ intention: "needs_confirmation"
+
+--- CASO 7: Múltiples productos con modificaciones diferentes ---
+Cliente: "quiero 2 perros calientes: uno con queso extra y sin lechuga, y otro con queso extra"
+Productos:
+- perro caliente #1: quantity=1, modifications=["con queso extra", "sin lechuga"]
+- perro caliente #2: quantity=1, modifications=["con queso extra"]
+→ intention: "needs_confirmation"
+
+--- CASO 8: Confirmación de pedido complejo ---
+Cliente: "quiero 3 hamburguesas y 2 perros. 1 hamburguesa sin cebolla, otra sin vegetales y sin salsa, y otra con todo. Los perros llevan queso extra pero uno sin lechuga"
+Bot debe resumir: "Para confirmar: 3 hamburguesas - 1 sin cebolla, 1 sin vegetales y sin salsa, 1 con todo. 2 perros - 1 con queso extra y sin lechuga, 1 con queso extra. ¿Confirmas?"
+→ intention: "needs_confirmation"
+→ confirmation_message: "Para confirmar: 3 hamburguesas (1 sin cebolla, 1 sin vegetales/sin salsa, 1 con todo) y 2 perros (1 con queso extra/sin lechuga, 1 con queso extra). ¿Confirmas?"
+
+--- CASO 9: Modificación durante confirmación ---
+Cliente (confirmando): "no quiero cambiar la orden" o "quiero modificar solo una cosa"
+→ intention: "modify_order" o "cancel_confirmation"
+→ response_text: "OK, dime qué quieres cambiar" o "Dime qué deseas modificar"
+
+--- CASO 10: Agregar item nuevo durante modificación ---
+Cliente: "quiero que los perros lleven salsa tártara y además también quiero una coca de 2 litros"
+→ Detecta: Agregar salsa tártara a perros existentes + nuevo producto "coca 2 litros"
+→ intention: "needs_confirmation" (si coca requiere confirmación por modificaciones)
+→ products: [
+  {"name": "coca 2 litros", "quantity": 1, "modifications": []},
+  {"name": "perro caliente", "quantity": 2, "modifications": ["con salsa tártara"]} (actualización)
+]
+
 REGLAS DE DETECCIÓN DE MODIFICACIONES:
 - "sin [algo]" → SIEMPRE es modificación
 - "con [algo] extra" → SIEMPRE es modificación
