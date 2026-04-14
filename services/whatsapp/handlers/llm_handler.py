@@ -145,6 +145,15 @@ class LLMHandler(BaseWhatsAppHandler):
             response_text = llm_response.get("response_text", "")
             products = llm_response.get("products", [])
             
+            # Check if this is a modification to existing cart item (not adding new)
+            is_modify_intent = self._detect_modify_intent(user_message, products, current_cart)
+            
+            if is_modify_intent:
+                logger.info(f"🔄 Handling as MODIFY existing cart item (not add)")
+                return await self._handle_modify_cart_item(
+                    products, response_text, session, tenant_id, phone, current_cart
+                )
+            
             # Check if any product requires confirmation
             if intention == "needs_confirmation" or self._any_product_needs_confirmation(products, provider):
                 logger.info(f"🔄 Handling needs_confirmation for {len(products)} products")
@@ -253,6 +262,37 @@ class LLMHandler(BaseWhatsAppHandler):
         for product in products:
             if provider.should_confirm_product(product):
                 return True
+        return False
+    
+    def _detect_modify_intent(self, user_message: str, products: List[Dict[str, Any]], current_cart: List[Dict[str, Any]]) -> bool:
+        """
+        Detect if user wants to modify existing cart item vs adding new one.
+        Examples: "la hamburguesa la quiero sin salsa", "cambiar la hamburguesa sin cebolla"
+        """
+        if not current_cart or not products:
+            return False
+        
+        msg_lower = user_message.lower()
+        
+        # Keywords indicating modification intent
+        modify_keywords = [
+            "la quiero", "la quieres", "quiero que", "ponle", "ponerle",
+            "sin ", "con ", "agregarle", "quitarle", "cambiar", "modificar",
+            "hazla", "hazlo", "dale", "también"
+        ]
+        
+        has_modify_keyword = any(kw in msg_lower for kw in modify_keywords)
+        
+        # Check if product mentioned already exists in cart
+        for product in products:
+            product_name = product.get("name", "").lower()
+            for item in current_cart:
+                item_name = item.get("name", "").lower()
+                # If product is in cart AND has modification keywords
+                if (product_name in item_name or item_name in product_name) and has_modify_keyword:
+                    logger.info(f"🔄 Detected MODIFY intent: {product_name} already in cart with modifications")
+                    return True
+        
         return False
     
     async def _handle_needs_confirmation(
@@ -494,6 +534,73 @@ Responde *sí* para confirmar o *no* para seguir agregando."""
             await self.update_session_state(session_id, "initial", session_data)
         
         return response_text or "Pedido cancelado. Escribe *hola* para comenzar de nuevo."
+    
+    async def _handle_modify_cart_item(
+        self,
+        products: List[Dict[str, Any]],
+        response_text: str,
+        session: Dict[str, Any],
+        tenant_id: str,
+        phone: str,
+        current_cart: List[Dict[str, Any]]
+    ):
+        """
+        Handle modification of existing cart items (not adding new ones)
+        When user says "la hamburguesa la quiero sin salsa" after order is in cart
+        """
+        session_id = session.get("id")
+        
+        if not products:
+            return response_text or "¿Qué producto quieres modificar?"
+        
+        modified_count = 0
+        modification_details = []
+        
+        for product in products:
+            product_name = product.get("name", "").lower()
+            modifications = product.get("modifications", [])
+            
+            # Find matching item in cart
+            for item in current_cart:
+                item_name = item.get("name", "").lower()
+                # Match by product name (partial match allowed)
+                if product_name in item_name or item_name in product_name:
+                    # Apply modifications
+                    old_mods = item.get("modifications", [])
+                    item["modifications"] = list(set(old_mods + modifications))  # Merge without duplicates
+                    modified_count += 1
+                    modification_details.append(f"{item.get('name')} ({', '.join(item['modifications'])})")
+                    break
+        
+        # Calculate new total
+        total = sum(
+            item.get("price", 0) * item.get("quantity", 1) 
+            for item in current_cart
+        )
+        
+        # Build cart summary
+        cart_summary = "\n".join([
+            f"• {item.get('name')}"
+            + (f" ({', '.join(item.get('modifications', []))})" if item.get('modifications') else "")
+            + f" x{item.get('quantity', 1)}"
+            for item in current_cart
+        ])
+        
+        # Response
+        if modified_count > 0:
+            response = f"✅ Modificado: {', '.join(modification_details)}\n\n🛒 Carrito actual:\n{cart_summary}\n\n💰 Total: ${total:.2f}\n\n¿Deseas confirmar el pedido o agregar algo más?"
+        else:
+            response = f"No encontré ese producto en tu carrito.\n\n🛒 Carrito actual:\n{cart_summary}\n\n💰 Total: ${total:.2f}"
+        
+        # Update session
+        if session_id:
+            await self.update_session_state(session_id, "cart_review", {
+                "cart": current_cart,
+                "total": total
+            })
+            await self._update_history(session, f"modificar {product_name}", response)
+        
+        return response
     
     async def _update_history(
         self,

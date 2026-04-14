@@ -238,8 +238,10 @@ PRODUCTOS DISPONIBLES:
 REGLAS CRÍTICAS:
 1. SOLO vende productos de la lista
 2. CUALQUIER modificación → SIEMPRE usar "needs_confirmation"
-3. Modificaciones incluyen: "sin X", "con X extra", "doble", etc.
+3. Modificaciones incluyen: "sin X", "con X extra", "doble", "también sin X", etc.
 4. Si confidence < 0.8 → usar "needs_confirmation"
+5. En mensajes combinados (múltiples mensajes juntos): Si el usuario dice "la hamburguesa también sin X" después de pedirla, es una modificación al mismo pedido, NO un pedido nuevo
+6. "También" = agregar modificación al producto mencionado anteriormente
 
 EJEMPLOS RÁPIDOS:
 
@@ -273,6 +275,13 @@ Caso 5 - COMPLEJO: Mismo producto, diferentes modificaciones:
   {{"name": "hamburguesa", "quantity": 1, "modifications": [], "requires_confirmation": false}}
 ], "confirmation_message": "Para confirmar: 3 hamburguesas (1 sin cebolla, 1 sin vegetales/salsa, 1 normal). ¿Correcto?"}}
 
+Caso 6 - Modificación tardía en contexto continuo:
+"hola quiero una hamburguesa y dos perros sin salsa la hamburguesa también sin salsa"
+→ {{"intention": "needs_confirmation", "products": [
+  {{"name": "hamburguesa", "quantity": 1, "modifications": ["sin salsa"], "requires_confirmation": true}},
+  {{"name": "perro caliente", "quantity": 2, "modifications": ["sin salsa"], "requires_confirmation": true}}
+], "confirmation_message": "Para confirmar: 1 hamburguesa sin salsa y 2 perros sin salsa. ¿Correcto?"}}
+
 Caso 6 - MUY COMPLEJO: Múltiples productos con variaciones:
 "quiero 3 hamburguesas y 2 perros. 1 hamburguesa sin cebolla, otra sin vegetales, otra normal. Los perros con queso extra pero uno sin lechuga"
 → {{"intention": "needs_confirmation", "products": [
@@ -285,7 +294,7 @@ Caso 6 - MUY COMPLEJO: Múltiples productos con variaciones:
 
 FORMATO JSON OBLIGATORIO:
 {{
-  "intention": "add_to_cart|needs_confirmation|show_menu|ask_question|confirm_order|cancel|other",
+  "intention": "add_to_cart|needs_confirmation|modify_cart_item|show_menu|ask_question|confirm_order|cancel|other",
   "response_text": "Mensaje corto y amigable",
   "products": [
     {{
@@ -301,7 +310,10 @@ FORMATO JSON OBLIGATORIO:
   "suggested_actions": ["confirmar", "cancelar", "menu"]
 }}
 
-REGLA DE ORO: Si hay CUALQUIER modificación o duda → "needs_confirmation" SIEMPRE."""
+REGLA DE ORO: Si hay CUALQUIER modificación o duda → "needs_confirmation" SIEMPRE.
+
+NOTA IMPORTANTE:
+- Si el usuario ya tiene items en el carrito y dice "la [producto] la quiero sin X" o "[producto] sin X" (referiéndose a un item existente), usa "modify_cart_item" para modificar el item existente, NO para agregar uno nuevo."""
         
         return prompt
     
