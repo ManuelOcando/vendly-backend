@@ -31,7 +31,7 @@ class MessageBuffer:
     last_updated: datetime = field(default_factory=datetime.utcnow)
 
 _message_buffers: Dict[str, MessageBuffer] = {}  # phone -> MessageBuffer
-BUFFER_TIMEOUT_SECONDS = 3  # Wait 3 seconds for additional messages
+BUFFER_TIMEOUT_SECONDS = 10  # Wait 10 seconds for additional messages
 BUFFER_MAX_SIZE = 10  # Maximum messages to accumulate
 
 def _is_message_processed(message_id: str) -> bool:
