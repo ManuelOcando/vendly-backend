@@ -5,11 +5,13 @@ Documentación: https://developers.facebook.com/docs/whatsapp/cloud-api
 import os
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Request, Depends
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import httpx
 import json
 from datetime import datetime
 import logging
+import asyncio
+from dataclasses import dataclass, field
 
 from api.deps import get_current_tenant
 from services.whatsapp.meta_service import MetaWhatsAppService
@@ -19,6 +21,18 @@ logger = logging.getLogger(__name__)
 
 # Simple in-memory cache for processed message IDs (prevents duplicate webhook processing)
 _processed_message_ids = set()
+
+# Message buffer for multi-message context (accumulates messages within time window)
+@dataclass
+class MessageBuffer:
+    messages: List[str] = field(default_factory=list)
+    message_ids: List[str] = field(default_factory=list)
+    timer: Optional[asyncio.Task] = None
+    last_updated: datetime = field(default_factory=datetime.utcnow)
+
+_message_buffers: Dict[str, MessageBuffer] = {}  # phone -> MessageBuffer
+BUFFER_TIMEOUT_SECONDS = 3  # Wait 3 seconds for additional messages
+BUFFER_MAX_SIZE = 10  # Maximum messages to accumulate
 
 def _is_message_processed(message_id: str) -> bool:
     """Check if a message has already been processed"""
@@ -296,15 +310,16 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
                             
                             logger.info(f"✓ Message from {phone} to tenant {tenant_id}: {text}")
                             
-                            # Procesar mensaje
+                            # Procesar mensaje (con buffering para múltiples mensajes)
                             background_tasks.add_task(
                                 process_meta_message,
                                 tenant_id,
                                 phone,
                                 text,
-                                phone_number_id
+                                phone_number_id,
+                                message_id
                             )
-                            logger.info(f"✓ Background task added for processing")
+                            logger.info(f"✓ Background task added for processing with message_id: {message_id}")
                         else:
                             logger.error(f"✗ No tenant found for phone_number_id: {phone_number_id}")
                             logger.error(f"Check your whatsapp_configs table has this phone_number_id: {phone_number_id}")
@@ -320,11 +335,35 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
         logger.error(f"Webhook error: {e}")
         return {"status": "error", "message": str(e)}
 
-async def process_meta_message(tenant_id: str, phone: str, text: str, phone_id: str):
-    """Procesar mensaje entrante usando el nuevo bot service"""
+async def _process_buffered_messages(tenant_id: str, phone: str, phone_id: str):
+    """Process accumulated messages from buffer"""
+    global _message_buffers
+    
     try:
-        logger.info(f"=== PROCESSING MESSAGE ===")
-        logger.info(f"Tenant: {tenant_id}, Phone: {phone}, Text: {text[:50]}, PhoneID: {phone_id}")
+        # Get and clear buffer for this phone
+        buffer_key = f"{tenant_id}:{phone}"
+        if buffer_key not in _message_buffers:
+            return
+        
+        buffer = _message_buffers[buffer_key]
+        messages = buffer.messages.copy()
+        message_ids = buffer.message_ids.copy()
+        
+        # Clear buffer
+        del _message_buffers[buffer_key]
+        
+        if not messages:
+            return
+        
+        # Join all messages with spaces
+        combined_text = " ".join(messages)
+        
+        logger.info("=" * 60)
+        logger.info(f"🔄 PROCESSING BUFFERED MESSAGES for {phone}")
+        logger.info(f"   Total messages: {len(messages)}")
+        logger.info(f"   Message IDs: {message_ids}")
+        logger.info(f"   Combined text: {combined_text[:200]}...")
+        logger.info("=" * 60)
         
         from services.whatsapp.meta_bot_service import bot_service
         from db.supabase import get_supabase_client
@@ -338,29 +377,103 @@ async def process_meta_message(tenant_id: str, phone: str, text: str, phone_id: 
             return
         
         token = result.data[0]["access_token"]
-        logger.info(f"Token retrieved: {token[:10]}...")
         
         # Crear instancia del servicio para responder
         service = MetaWhatsAppService(phone_number_id=phone_id, access_token=token)
-        logger.info(f"MetaWhatsAppService created")
         
-        # Procesar mensaje con el nuevo bot service
-        logger.info(f"Calling bot_service.process_message...")
-        response = await bot_service.process_message(tenant_id, phone, text, phone_id)
-        logger.info(f"Bot response: {response[:100] if response else 'None'}")
+        # Procesar mensaje combinado con el nuevo bot service
+        logger.info(f"Calling bot_service.process_message with combined text...")
+        response = await bot_service.process_message(tenant_id, phone, combined_text, phone_id)
         
         # Enviar respuesta
         if response:
             logger.info(f"Sending response to {phone}")
-            send_result = service.send_message(phone, response)
-            logger.info(f"Send result: {send_result}")
+            service.send_message(phone, response)
         else:
-            logger.warning(f"No response generated for message: {text}")
+            logger.warning(f"No response generated for combined message: {combined_text[:100]}")
+            
+    except Exception as e:
+        logger.error(f"ERROR in _process_buffered_messages: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+
+
+async def process_meta_message(tenant_id: str, phone: str, text: str, phone_id: str, message_id: str = None):
+    """
+    Procesar mensaje entrante usando el nuevo bot service.
+    Implementa buffering para acumular múltiples mensajes en un solo contexto.
+    """
+    global _message_buffers
+    
+    try:
+        logger.info(f"📩 NEW MESSAGE from {phone}: {text[:50]}")
+        
+        buffer_key = f"{tenant_id}:{phone}"
+        
+        # Check if we have an existing buffer for this user
+        if buffer_key in _message_buffers:
+            buffer = _message_buffers[buffer_key]
+            
+            # Cancel existing timer
+            if buffer.timer and not buffer.timer.done():
+                buffer.timer.cancel()
+                logger.info(f"⏹️ Cancelled existing timer for {phone}")
+            
+            # Add message to buffer
+            buffer.messages.append(text)
+            if message_id:
+                buffer.message_ids.append(message_id)
+            buffer.last_updated = datetime.utcnow()
+            
+            logger.info(f"📥 Added to buffer. Total messages: {len(buffer.messages)}")
+            
+            # Check if buffer is full
+            if len(buffer.messages) >= BUFFER_MAX_SIZE:
+                logger.info(f"📦 Buffer full ({BUFFER_MAX_SIZE} messages), processing immediately...")
+                await _process_buffered_messages(tenant_id, phone, phone_id)
+                return
+        else:
+            # Create new buffer
+            _message_buffers[buffer_key] = MessageBuffer(
+                messages=[text],
+                message_ids=[message_id] if message_id else [],
+                last_updated=datetime.utcnow()
+            )
+            logger.info(f"🆕 Created new buffer for {phone}")
+        
+        # Start new timer to process after delay
+        async def delayed_process():
+            await asyncio.sleep(BUFFER_TIMEOUT_SECONDS)
+            logger.info(f"⏰ Timer expired for {phone}, processing buffered messages...")
+            await _process_buffered_messages(tenant_id, phone, phone_id)
+        
+        # Store the timer task
+        _message_buffers[buffer_key].timer = asyncio.create_task(delayed_process())
+        
+        logger.info(f"⏳ Timer started: {BUFFER_TIMEOUT_SECONDS}s wait for more messages...")
             
     except Exception as e:
         logger.error(f"ERROR in process_meta_message: {e}")
         import traceback
         logger.error(traceback.format_exc())
+        
+        # Fallback: process immediately on error
+        try:
+            from services.whatsapp.meta_bot_service import bot_service
+            from db.supabase import get_supabase_client
+            
+            db = get_supabase_client()
+            result = db.table("whatsapp_configs").select("access_token").eq("tenant_id", tenant_id).execute()
+            
+            if result.data:
+                token = result.data[0]["access_token"]
+                service = MetaWhatsAppService(phone_number_id=phone_id, access_token=token)
+                response = await bot_service.process_message(tenant_id, phone, text, phone_id)
+                
+                if response:
+                    service.send_message(phone, response)
+        except Exception as fallback_error:
+            logger.error(f"Fallback processing also failed: {fallback_error}")
 
 @router.post("/send-message")
 async def send_whatsapp_message(
