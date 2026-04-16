@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
+import os
 from config import get_settings
 from api.v1.router import router as v1_router
 from middleware.rate_limiter import limiter, rate_limit_exception_handler
@@ -29,6 +31,44 @@ app = FastAPI(
 # Add rate limiting
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_exception_handler)
+
+# Routes for legal pages (required for Meta approval)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+@app.get("/privacy-policy", response_class=HTMLResponse, include_in_schema=False)
+async def privacy_policy():
+    """Privacy Policy page - Required for Meta/WhatsApp Business API approval"""
+    privacy_file = os.path.join(BASE_DIR, "static", "privacy-policy.html")
+    if os.path.exists(privacy_file):
+        with open(privacy_file, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    return HTMLResponse(content="<h1>Privacy Policy - Coming Soon</h1>", status_code=503)
+
+@app.get("/terms-of-service", response_class=HTMLResponse, include_in_schema=False)
+async def terms_of_service():
+    """Terms of Service page - Required for Meta/WhatsApp Business API approval"""
+    terms_file = os.path.join(BASE_DIR, "static", "terms-of-service.html")
+    if os.path.exists(terms_file):
+        with open(terms_file, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    return HTMLResponse(content="<h1>Terms of Service - Coming Soon</h1>", status_code=503)
+
+@app.get("/legal", response_class=HTMLResponse, include_in_schema=False)
+async def legal_redirect():
+    """Legal information page with links"""
+    return HTMLResponse(content="""
+    <!DOCTYPE html>
+    <html>
+    <head><title>Legal - Vendly</title></head>
+    <body>
+        <h1>Información Legal</h1>
+        <ul>
+            <li><a href="/privacy-policy">Política de Privacidad</a></li>
+            <li><a href="/terms-of-service">Términos de Servicio</a></li>
+        </ul>
+    </body>
+    </html>
+    """)
 
 # Security headers middleware
 @app.middleware("http")
