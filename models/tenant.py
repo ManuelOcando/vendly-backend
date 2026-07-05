@@ -41,4 +41,5 @@ class TenantResponse(BaseModel):
     store_config: Optional[dict] = None
     subscription_plan: str = "trial"
     subscription_expires_at: Optional[str] = None
+    onboarding_status: str = "not_started"
     created_at: Optional[str] = None

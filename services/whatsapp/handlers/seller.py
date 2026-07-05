@@ -1,43 +1,53 @@
 """
-Seller message handlers for WhatsApp bot
+Seller message handlers for WhatsApp bot with Conversational Dashboard
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .base import BaseWhatsAppHandler
+from services.conversational_dashboard import ConversationalDashboard, get_conversational_dashboard
 
 logger = logging.getLogger(__name__)
 
 class SellerMenuHandler(BaseWhatsAppHandler):
-    """Handles seller menu and commands"""
+    """Handles seller menu and commands with Conversational Dashboard"""
+    
+    def __init__(self, db):
+        super().__init__(db)
+        self.dashboard = ConversationalDashboard(db)
     
     async def can_handle(self, message_data: Dict[str, Any]) -> bool:
         """Check if user is seller and message is a command"""
         is_seller = message_data.get("is_seller", False)
         message = message_data.get("message", "").lower().strip()
         
+        # Expanded command list to include all dashboard commands
+        seller_commands = [
+            "pedidos", "órdenes", "stock", "inventario", "actualizar", 
+            "resumen", "estadísticas", "analytics", "alertas", "configurar",
+            "preguntas frecuentes", "faq", "config", "configuración",
+            "dashboard", "panel"
+        ]
+        
         return is_seller and any(
             cmd in message 
-            for cmd in ["pedidos", "órdenes", "stock", "inventario", "actualizar", "resumen", "estadísticas"]
+            for cmd in seller_commands
         )
     
     async def handle(self, message_data: Dict[str, Any]) -> Optional[str]:
-        """Handle seller commands"""
+        """Handle seller commands using Conversational Dashboard"""
         tenant_id = message_data.get("tenant_id")
-        message = message_data.get("message", "").lower().strip()
+        seller_phone = message_data.get("phone", "")
+        message = message_data.get("message", "").strip()
         
-        if "pedidos" in message or "órdenes" in message:
-            return await self._send_orders_summary(tenant_id)
-        elif "stock" in message or "inventario" in message:
-            if "actualizar" in message:
-                return await self._process_stock_update(tenant_id, message)
-            else:
-                return await self._send_stock_status(tenant_id)
-        elif "resumen" in message or "estadísticas" in message:
-            return await self._send_daily_summary(tenant_id)
-        else:
-            return await self._send_seller_menu()
+        # Process command through Conversational Dashboard
+        try:
+            response = await self.dashboard.process_seller_command(tenant_id, seller_phone, message)
+            return response
+        except Exception as e:
+            logger.error(f"Error processing seller command: {e}")
+            return "Error al procesar el comando. Intenta nuevamente."
     
     async def _send_orders_summary(self, tenant_id: str) -> str:
         """Send orders summary to seller"""
@@ -148,31 +158,34 @@ class SellerMenuHandler(BaseWhatsAppHandler):
     async def _send_daily_summary(self, tenant_id: str) -> str:
         """Send daily summary to seller"""
         try:
-            # Get last 7 days data
-            start_date = (datetime.now() - datetime.timedelta(days=7)).date().isoformat()
+            # Get today's data
+            today = datetime.now().date().isoformat()
             
             orders_result = self.db.table("orders").select(
                 "created_at, total, status"
-            ).eq("tenant_id", tenant_id).gte("created_at", start_date).execute()
+            ).eq("tenant_id", tenant_id).gte("created_at", today).execute()
             
             if not orders_result.data:
-                return "No hay pedidos en los últimos 7 días."
+                return "No hay pedidos hoy."
             
             total_revenue = 0
             total_orders = len(orders_result.data)
             completed_orders = 0
+            pending_orders = 0
             
             for order in orders_result.data:
                 if order["status"] in ["completed", "delivered"]:
                     total_revenue += float(order.get("total", 0) or 0)
                     completed_orders += 1
+                elif order["status"] in ["pending", "payment_pending"]:
+                    pending_orders += 1
             
-            message = f"""📈 *Resumen de 7 días*
+            message = f"""📈 *Resumen del Día ({today})*
 
 📊 Pedidos totales: {total_orders}
 ✅ Completados: {completed_orders}
 💰 Ingresos: ${total_revenue:.2f}
-📈 Tasa de completado: {(completed_orders/total_orders*100):.1f}%
+⏳ Pendientes: {pending_orders}
 
 Usa "pedidos" para ver detalles o "stock" para inventario."""
             
@@ -182,6 +195,15 @@ Usa "pedidos" para ver detalles o "stock" para inventario."""
             logger.error(f"Error getting daily summary: {e}")
             return "Error al obtener resumen diario."
     
+    async def check_and_send_alerts(self, tenant_id: str) -> List[str]:
+        """Check and send smart alerts for a tenant"""
+        try:
+            alerts = await self.dashboard.check_and_send_alerts(tenant_id)
+            return alerts
+        except Exception as e:
+            logger.error(f"Error checking alerts: {e}")
+            return []
+    
     async def _send_seller_menu(self) -> str:
         """Send seller menu"""
         return """🛠️ *Panel de Vendedor*
@@ -190,4 +212,7 @@ Usa "pedidos" para ver detalles o "stock" para inventario."""
 • Escribe "pedidos" - Ver resumen de pedidos
 • Escribe "stock" - Consultar inventario
 • Escribe "actualizar stock [producto] [cantidad]" - Actualizar stock
-• Escribe "resumen" - Ver estadísticas del día"""
+• Escribe "resumen" - Ver estadísticas del día
+• Escribe "alertas" - Configurar alertas inteligentes
+• Escribe "analytics" - Ver análisis de conversaciones
+• Escribe "preguntas frecuentes" - Ver preguntas comunes"""

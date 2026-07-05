@@ -30,19 +30,39 @@ class MessageBuffer:
     timer: Optional[asyncio.Task] = None
     last_updated: datetime = field(default_factory=datetime.utcnow)
 
-_message_buffers: Dict[str, MessageBuffer] = {}  # phone -> MessageBuffer
+_message_buffers: Dict[str, MessageBuffer] = {}  # key: "{tenant_id}:{phone}" -> MessageBuffer
 BUFFER_TIMEOUT_SECONDS = 10  # Wait 10 seconds for additional messages
 BUFFER_MAX_SIZE = 10  # Maximum messages to accumulate
 
-def _is_message_processed(message_id: str) -> bool:
-    """Check if a message has already been processed"""
-    if message_id in _processed_message_ids:
+
+def combine_messages(messages: List[str]) -> str:
+    """Pure function: joins a list of messages into a single string separated by spaces.
+
+    This is the canonical way to combine buffered messages before processing.
+    Buffer key format: "{tenant_id}:{phone}" (see process_meta_message).
+    """
+    return " ".join(messages)
+
+def mask_token(token: str) -> str:
+    """Enmascara un access token mostrando solo los primeros 10 y últimos 4 caracteres."""
+    if len(token) > 14:
+        return token[:10] + "..." + token[-4:]
+    return "***"
+
+
+def is_processed(message_id: str, cache: set) -> bool:
+    """Pure function: returns True if message_id is in cache, otherwise adds it and returns False."""
+    if message_id in cache:
         return True
-    # Add to cache (limit size to prevent memory issues)
+    cache.add(message_id)
+    return False
+
+
+def _is_message_processed(message_id: str) -> bool:
+    """Check if a message has already been processed (uses global cache with size limit)."""
     if len(_processed_message_ids) > 1000:
         _processed_message_ids.clear()
-    _processed_message_ids.add(message_id)
-    return False
+    return is_processed(message_id, _processed_message_ids)
 
 class MetaWhatsAppConfig(BaseModel):
     phone_number_id: str
@@ -54,22 +74,6 @@ class WhatsAppMessageRequest(BaseModel):
     to: str
     message: str
 
-class WhatsAppConnection(BaseModel):
-    store_id: str
-    phone_number: str
-    instance_name: str
-
-class WhatsAppMessage(BaseModel):
-    instance_id: str
-    to: str
-    message: str
-    message_type: str = "text"
-
-class WebhookMessage(BaseModel):
-    key: Dict[str, Any]
-    message: Dict[str, Any]
-    instance: str
-    senderData: Dict[str, Any]
 
 @router.get("/health")
 async def get_whatsapp_health(tenant: dict = Depends(get_current_tenant)):
@@ -100,8 +104,6 @@ async def get_whatsapp_health(tenant: dict = Depends(get_current_tenant)):
     return {
         "configured": True,
         "connected": health.get("connected", False),
-        "status": health.get("status"),
-        "app_name": health.get("name"),
         "phone_number_id": config.get("phone_number_id"),
         "timestamp": datetime.now().isoformat()
     }
@@ -131,7 +133,7 @@ async def get_whatsapp_config(tenant: dict = Depends(get_current_tenant)):
     
     # Mask token for security
     token = config.get("access_token", "")
-    masked_token = token[:10] + "..." + token[-4:] if len(token) > 14 else "***"
+    masked_token = mask_token(token)
     
     return {
         "configured": True,
@@ -158,23 +160,35 @@ async def save_whatsapp_config(
         logger.info(f"Saving WhatsApp config for tenant {tenant['id']}")
         logger.info(f"Phone ID: {data.phone_number_id}, Business ID: {data.business_account_id}, Phone: {data.phone_number}")
         
-        # Verificar credenciales (pero guardamos igual para debug)
+        # Verificar credenciales contra Meta Graph API
         service = MetaWhatsAppService(
             phone_number_id=data.phone_number_id,
             access_token=data.access_token
         )
         
+        network_error: Optional[str] = None
+        is_valid = False
+
         try:
             verification = service.verify_credentials()
             is_valid = verification.get("valid", False)
             error_detail = verification.get("error", "")
             logger.info(f"Credential verification result: valid={is_valid}")
         except Exception as e:
-            logger.error(f"Error during credential verification: {e}")
-            is_valid = False
-            error_detail = str(e)
-        
-        # Preparar datos
+            # Error de red / timeout — no podemos confirmar si las credenciales son válidas
+            logger.error(f"Network error during credential verification: {e}")
+            network_error = str(e)
+            error_detail = network_error
+
+        # Si las credenciales son explícitamente inválidas (token expirado / incorrecto),
+        # rechazar sin guardar (Requirement 2.3)
+        if not is_valid and network_error is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Credenciales inválidas: el token de acceso es incorrecto o ha expirado. {error_detail}".strip()
+            )
+
+        # Preparar datos — solo guardamos cuando is_valid=True o hubo error de red
         config_data = {
             "tenant_id": tenant["id"],
             "phone_number_id": data.phone_number_id,
@@ -213,19 +227,23 @@ async def save_whatsapp_config(
             logger.error(f"Database error: {e}")
             raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
         
-        # Mensaje según resultado
         if is_valid:
-            message = "WhatsApp configurado y verificado correctamente"
+            return {
+                "status": "success",
+                "message": "WhatsApp configurado y verificado correctamente",
+                "verified": True,
+                "is_connected": True,
+                "warning": None
+            }
         else:
-            message = f"Configuración guardada pero credenciales no verificadas. Error: {error_detail}"
-        
-        return {
-            "status": "success",
-            "message": message,
-            "verified": is_valid,
-            "is_connected": is_valid,
-            "warning": error_detail if not is_valid else None
-        }
+            # network_error path: guardado con is_connected=False
+            return {
+                "status": "success",
+                "message": "Configuración guardada. No se pudo verificar la conexión con Meta por un error de red.",
+                "verified": False,
+                "is_connected": False,
+                "warning": error_detail
+            }
         
     except HTTPException:
         raise
@@ -251,9 +269,9 @@ async def verify_webhook(request: Request):
             return int(challenge)
         else:
             logger.warning(f"Webhook verification failed. Token: {token}")
-            return {"status": "error", "message": "Verification failed"}
+            raise HTTPException(status_code=403)
     
-    return {"status": "error", "message": "Missing parameters"}
+    raise HTTPException(status_code=403)
 
 @router.post("/webhook")
 async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
@@ -341,7 +359,7 @@ async def _process_buffered_messages(tenant_id: str, phone: str, phone_id: str):
     
     try:
         # Get and clear buffer for this phone
-        buffer_key = f"{tenant_id}:{phone}"
+        buffer_key = f"{tenant_id}:{phone}"  # Canonical key format: "{tenant_id}:{phone}"
         if buffer_key not in _message_buffers:
             return
         
@@ -355,8 +373,8 @@ async def _process_buffered_messages(tenant_id: str, phone: str, phone_id: str):
         if not messages:
             return
         
-        # Join all messages with spaces
-        combined_text = " ".join(messages)
+        # Join all messages with spaces using the canonical combine_messages function
+        combined_text = combine_messages(messages)
         
         logger.info("=" * 60)
         logger.info(f"🔄 PROCESSING BUFFERED MESSAGES for {phone}")
@@ -408,7 +426,7 @@ async def process_meta_message(tenant_id: str, phone: str, text: str, phone_id: 
     try:
         logger.info(f"📩 NEW MESSAGE from {phone}: {text[:50]}")
         
-        buffer_key = f"{tenant_id}:{phone}"
+        buffer_key = f"{tenant_id}:{phone}"  # Canonical key format: "{tenant_id}:{phone}"
         
         # Check if we have an existing buffer for this user
         if buffer_key in _message_buffers:
@@ -526,6 +544,54 @@ async def get_message_templates(tenant: dict = Depends(get_current_tenant)):
     
     templates = service.get_templates()
     return templates
+
+@router.get("/storefront-link")
+async def get_storefront_link(
+    cart_id: str,
+    tenant: dict = Depends(get_current_tenant)
+):
+    """
+    Genera un enlace wa.me para que el cliente finalice su compra por WhatsApp.
+
+    El enlace pre-rellena un mensaje con el cart_id y los nombres de los productos.
+    Requiere que el tenant tenga `whatsapp_number` en la tabla `tenants` y el
+    carrito activo en Redis.
+    """
+    import json as _json
+    from utils.whatsapp_link import generate_whatsapp_link
+
+    # 1. Obtener whatsapp_number del tenant
+    whatsapp_number = tenant.get("whatsapp_number")
+    if not whatsapp_number:
+        raise HTTPException(
+            status_code=400,
+            detail="El tenant no tiene un número de WhatsApp configurado en su perfil."
+        )
+
+    # 2. Obtener carrito de Redis
+    try:
+        from db.redis import get_redis_client as _get_redis
+        import json as _json
+        redis_client = _get_redis()
+        cart_data = await redis_client.get(f"cart:{cart_id}")
+    except Exception as e:
+        logger.error(f"Error conectando a Redis: {e}")
+        raise HTTPException(status_code=503, detail="No se pudo acceder al carrito. Intenta de nuevo.")
+
+    if not cart_data:
+        raise HTTPException(status_code=404, detail="Carrito no encontrado o expirado.")
+
+    cart = _json.loads(cart_data)
+    products = cart.get("items", [])
+
+    if not products:
+        raise HTTPException(status_code=400, detail="El carrito está vacío.")
+
+    # 3. Generar enlace
+    link = generate_whatsapp_link(whatsapp_number, cart_id, products)
+
+    return {"link": link, "cart_id": cart_id}
+
 
 @router.delete("/config")
 async def delete_whatsapp_config(tenant: dict = Depends(get_current_tenant)):

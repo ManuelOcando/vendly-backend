@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     # OpenRouter Configuration
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_MODEL: str = "qwen/qwen-3.5b-instruct"
-    LLM_FALLBACK_ENABLED: bool = True
+    LLM_ENABLED: bool = True
     LLM_CONFIDENCE_THRESHOLD: float = 0.7
     
     # Bot Personality Defaults

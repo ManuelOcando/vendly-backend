@@ -3,11 +3,13 @@ Customer message handlers for WhatsApp bot
 """
 from typing import Dict, Any, Optional
 import re
+import json
 import logging
 from datetime import datetime
 
 from .base import BaseWhatsAppHandler
-from api.v1.cart import get_cart as get_cart_service
+from db.redis import get_redis_client
+from services.whatsapp.meta_service import MetaWhatsAppService
 
 logger = logging.getLogger(__name__)
 
@@ -387,29 +389,51 @@ class ConfirmationHandler(BaseWhatsAppHandler):
         
         return None  # Let next handler process
 
+async def _get_cart_from_redis(cart_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve a cart from Redis by cart_id. Returns None if not found or expired."""
+    try:
+        redis_client = get_redis_client()
+        cart_data = await redis_client.get(f"cart:{cart_id}")
+        if not cart_data:
+            return None
+        cart = json.loads(cart_data)
+        # Check expiration
+        expires_at_str = cart.get("expires_at")
+        if expires_at_str:
+            expires_at = datetime.fromisoformat(expires_at_str)
+            if datetime.utcnow() > expires_at:
+                await redis_client.delete(f"cart:{cart_id}")
+                return None
+        return cart
+    except Exception as e:
+        logger.error(f"Error retrieving cart {cart_id} from Redis: {e}")
+        return None
+
+
 class CartHandler(BaseWhatsAppHandler):
     """Handles cart-related messages from storefront"""
     
     async def can_handle(self, message_data: Dict[str, Any]) -> bool:
-        """Check if message contains cart ID"""
-        message = message_data.get("message", "").lower().strip()
-        return message.startswith("pedido:")
+        """Check if message contains cart ID (case-insensitive prefix check)"""
+        message = message_data.get("message", "").strip()
+        return message.lower().startswith("pedido:")
     
     async def handle(self, message_data: Dict[str, Any]) -> Optional[str]:
         """Handle cart from storefront"""
-        cart_id = message_data.get("message", "").lower().replace("pedido:", "").strip()
+        raw_message = message_data.get("message", "").strip()
+        # Preserve original case of cart_id — only strip the "pedido:" prefix
+        cart_id = raw_message[len("pedido:"):].strip()
         tenant_id = message_data.get("tenant_id")
-        phone = message_data.get("phone")
         session = message_data.get("session", {})
         
         try:
-            # Get cart from Redis
-            cart = await get_cart_service(cart_id)
+            # Get cart directly from Redis (not via API endpoint)
+            cart = await _get_cart_from_redis(cart_id)
             
             if not cart:
                 return "El carrito ha expirado. Por favor, crea uno nuevo desde la tienda."
             
-            # Update session with cart
+            # Update session with cart_id and transition to viewing_cart
             session_id = session.get("id")
             if session_id:
                 await self.update_session_state(session_id, "viewing_cart", {"cart_id": cart_id})
@@ -459,13 +483,9 @@ class CartConfirmationHandler(BaseWhatsAppHandler):
             if not cart_id:
                 return "No encuentro tu carrito. Por favor, inicia nuevamente."
             
-            cart = await get_cart_service(cart_id)
+            cart = await _get_cart_from_redis(cart_id)
             if not cart:
                 return "Tu carrito ha expirado. Por favor, crea uno nuevo."
-            
-            # Get payment configuration
-            config = await self.get_tenant_config(tenant_id)
-            payment_info = config.get("payment_info", {})
             
             # Create order in database
             order_data = {
@@ -483,20 +503,60 @@ class CartConfirmationHandler(BaseWhatsAppHandler):
             if not order:
                 return "Error al procesar tu pedido. Por favor, intenta nuevamente."
             
+            # Notify seller about new order
+            try:
+                config_result = self.db.table("whatsapp_configs").select(
+                    "seller_phone, phone_number, phone_number_id, access_token"
+                ).eq("tenant_id", tenant_id).limit(1).execute()
+
+                if config_result.data:
+                    config = config_result.data[0]
+                    seller_phone = config.get("seller_phone") or config.get("phone_number")
+
+                    if seller_phone and seller_phone != phone:
+                        items_summary = ", ".join(
+                            f"{item['quantity']}x {item['name']}" for item in cart["items"]
+                        )
+                        notification = (
+                            f"🛒 Nuevo pedido #{order['id'][-8:]}\n"
+                            f"Cliente: {phone}\n"
+                            f"Total: ${cart['total']:.2f}\n"
+                            f"Items: {items_summary}"
+                        )
+                        MetaWhatsAppService(
+                            phone_number_id=config["phone_number_id"],
+                            access_token=config["access_token"]
+                        ).send_message(seller_phone, notification)
+                    else:
+                        logger.warning(
+                            f"No seller phone configured for tenant {tenant_id}, skipping notification"
+                        )
+                else:
+                    logger.warning(
+                        f"No whatsapp_configs found for tenant {tenant_id}, skipping seller notification"
+                    )
+            except Exception as notify_err:
+                logger.warning(f"Could not notify seller for tenant {tenant_id}: {notify_err}")
+
             # Send payment instructions
+            payment_instructions = "Por favor, contacta al vendedor para recibir las instrucciones de pago."
+            try:
+                bot_config_result = self.db.table("bot_configurations").select(
+                    "payment_instructions"
+                ).eq("tenant_id", tenant_id).limit(1).execute()
+                
+                if bot_config_result.data and bot_config_result.data[0].get("payment_instructions"):
+                    payment_instructions = bot_config_result.data[0]["payment_instructions"]
+            except Exception as config_err:
+                logger.warning(f"Could not fetch bot_configurations for tenant {tenant_id}: {config_err}")
+            
             payment_message = f"""¡Pedido confirmado! 🎉
 
 Orden #{order['id'][-8:]}
 
 Total: ${cart['total']:.2f}
 
-💳 Datos para Pago Móvil:
-Banco: {payment_info.get('bank', 'Banesco')}
-CI: {payment_info.get('ci', 'V-12345678')}
-Teléfono: {payment_info.get('phone', '0412-XXX-XXXX')}
-Monto: ${cart['total']:.2f}
-
-Por favor, envía el comprobante de pago cuando hayas realizado la transferencia."""
+{payment_instructions}"""
             
             # Update session state
             session_id = session.get("id")

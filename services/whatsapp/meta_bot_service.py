@@ -4,14 +4,16 @@ Compatible with Meta WhatsApp API
 """
 from typing import Dict, Any, Optional
 import logging
+import asyncio
 from datetime import datetime
 
 from db.supabase import get_supabase_client
-from services.whatsapp.meta_service import MetaWhatsAppService
 from services.whatsapp.handlers import (
-    WelcomeHandler, MenuHandler, ProductOrderHandler, ConfirmationHandler, 
-    CartHandler, CartConfirmationHandler, SellerMenuHandler, LLMHandler
+    MenuHandler,
+    CartHandler, CartConfirmationHandler, SellerMenuHandler, LLMHandler,
+    OnboardingHandler
 )
+from services.conversational_dashboard import ConversationalDashboard
 
 logger = logging.getLogger(__name__)
 
@@ -20,34 +22,30 @@ class MetaWhatsAppBotService:
     
     def __init__(self):
         self.db = get_supabase_client()
+        self.dashboard = ConversationalDashboard(self.db)
         self._setup_handlers()
     
     def _setup_handlers(self):
-        """Setup the handler chain"""
-        # Customer handlers
-        welcome_handler = WelcomeHandler(self.db)
-        menu_handler = MenuHandler(self.db)
-        confirmation_handler = ConfirmationHandler(self.db)  # Handle yes/no for pending products
-        product_order_handler = ProductOrderHandler(self.db)  # Exact match product names
-        llm_handler = LLMHandler(self.db)  # Natural language fallback
+        """Setup the handler chain (LLM-first architecture)"""
+        # LLM handler — first and primary respondent for customer messages
+        self.llm_handler = LLMHandler(self.db)
+
+        # Fallback chain: CartHandler → CartConfirmationHandler → MenuHandler
+        # (OrderConfirmationHandler not yet implemented, skipped)
         cart_handler = CartHandler(self.db)
         cart_confirmation_handler = CartConfirmationHandler(self.db)
-        
-        # Seller handlers
-        seller_handler = SellerMenuHandler(self.db)
-        
-        # Chain customer handlers:
-        # Welcome -> Menu -> Confirmation (yes/no) -> ProductOrder (exact match) -> LLM (fallback) -> Cart -> CartConfirmation
-        welcome_handler.next_handler = menu_handler
-        menu_handler.next_handler = confirmation_handler
-        confirmation_handler.next_handler = product_order_handler
-        product_order_handler.next_handler = llm_handler
-        llm_handler.next_handler = cart_handler
+        menu_handler = MenuHandler(self.db)
+
         cart_handler.next_handler = cart_confirmation_handler
+        cart_confirmation_handler.next_handler = menu_handler
+
+        self.fallback_chain = cart_handler
+
+        # Seller chain (independent, always active)
+        self.seller_chain = SellerMenuHandler(self.db)
         
-        # Store chains
-        self.customer_chain = welcome_handler
-        self.seller_chain = seller_handler
+        # Onboarding chain (for new tenants)
+        self.onboarding_chain = OnboardingHandler(self.db)
     
     async def process_message(self, tenant_id: str, phone: str, message: str, phone_number_id: str) -> Optional[str]:
         """Process incoming message and return response"""
@@ -66,6 +64,15 @@ class MetaWhatsAppBotService:
             # Get or create session
             session = await self._get_or_create_session(tenant_id, phone)
             
+            # Log inbound message
+            await self._log_message(
+                tenant_id=tenant_id,
+                direction="inbound",
+                phone=phone,
+                content=message,
+                status="received"
+            )
+            
             # Check if user is seller
             is_seller = await self._is_seller(tenant_id, phone)
             
@@ -81,17 +88,40 @@ class MetaWhatsAppBotService:
                 "is_seller": is_seller
             }
             
-            # Process through appropriate chain
+            # Process through appropriate chain (LLM-first architecture)
             if is_seller:
                 response = await self.seller_chain.process(message_data)
+            elif await self.llm_handler.can_handle(message_data):
+                response = await self.llm_handler.handle(message_data)
+                if response is None:  # LLM failed at runtime
+                    response = await self.fallback_chain.process(message_data)
             else:
-                response = await self.customer_chain.process(message_data)
+                # LLM not configured or disabled
+                response = await self.fallback_chain.process(message_data)
             
-            # If no handler processed the message, send default response
+            # If no handler processed the message, try onboarding
+            if not response:
+                response = await self.onboarding_chain.process(message_data)
+            
+            # If still no response, send default response
             if not response:
                 response = await self._default_response(message_data)
             
+            # Log outbound message
+            await self._log_message(
+                tenant_id=tenant_id,
+                direction="outbound",
+                phone=phone,
+                content=response,
+                status="delivered"
+            )
+            
             logger.info(f"Bot response: {response[:100]}...")
+            
+            # Check for smart alerts in background (non-blocking)
+            if not is_seller:  # Only check alerts for customer messages
+                asyncio.create_task(self._check_alerts_background(tenant_id))
+            
             return response
             
         except Exception as e:
@@ -149,18 +179,72 @@ class MetaWhatsAppBotService:
             return {}
     
     async def _is_seller(self, tenant_id: str, phone: str) -> bool:
-        """Check if phone number belongs to a seller"""
+        """Check if phone number belongs to the seller (business owner) of the tenant.
+
+        Logic:
+        - Queries whatsapp_configs for the tenant.
+        - If the record has a non-empty `seller_phone` field, compares `phone` against it.
+          This is the preferred approach: `seller_phone` is the personal phone of the
+          business owner, distinct from `phone_number` (the WhatsApp Business number / bot number).
+        - Falls back to comparing against `phone_number` if `seller_phone` is not set.
+
+        NOTE: A `seller_phone` column should be added to `whatsapp_configs` for proper
+        seller identification. Without it, the fallback compares against `phone_number`
+        (the WhatsApp Business account number), which may not match the seller's personal
+        phone in all deployments.
+        """
         try:
-            # Check if phone is in seller connections
             result = self.db.table("whatsapp_configs").select("*").eq(
                 "tenant_id", tenant_id
-            ).eq("phone_number", phone).execute()
-            
-            return len(result.data) > 0
+            ).execute()
+
+            if not result.data:
+                return False
+
+            config = result.data[0]
+
+            # Prefer seller_phone if the column exists and has a value
+            seller_phone = config.get("seller_phone")
+            if seller_phone:
+                return phone == seller_phone
+
+            # Fallback: compare against phone_number (the WhatsApp Business account number)
+            # TODO: Add `seller_phone` column to `whatsapp_configs` for proper seller
+            # identification. See migrations/ — no migration for seller_phone exists yet.
+            business_phone = config.get("phone_number")
+            return bool(business_phone and phone == business_phone)
+
         except Exception as e:
             logger.error(f"Error checking seller status: {e}")
             return False
     
+    async def _log_message(
+        self,
+        tenant_id: str,
+        direction: str,  # "inbound" or "outbound"
+        phone: str,      # sender_phone for inbound, receiver_phone for outbound
+        content: str,
+        status: str = "received"
+    ) -> None:
+        """Log a message to whatsapp_messages table. Never raises exceptions."""
+        try:
+            record: Dict[str, Any] = {
+                "tenant_id": tenant_id,
+                "direction": direction,
+                "content": content,
+                "status": status,
+                "created_at": datetime.now().isoformat(),
+            }
+            if direction == "inbound":
+                record["sender_phone"] = phone
+                record["message_type"] = "text"
+            else:
+                record["receiver_phone"] = phone
+
+            self.db.table("whatsapp_messages").insert(record).execute()
+        except Exception as e:
+            logger.error(f"Failed to log {direction} message for tenant {tenant_id}: {e}")
+
     async def _default_response(self, message_data: Dict[str, Any]) -> str:
         """Default response when no handler matches"""
         tenant_name = message_data.get("tenant_name", "Tienda")
@@ -180,6 +264,54 @@ class MetaWhatsAppBotService:
 • Escribe "pedido:TU_CARRO_ID" si vienes de la web
 
 ¿En qué puedo ayudarte?"""
+    
+    async def _check_alerts_background(self, tenant_id: str):
+        """Check for smart alerts in background (non-blocking)"""
+        try:
+            # Check if tenant has conversational dashboard enabled
+            subscription_result = self.db.table("tenant_subscriptions").select(
+                "features"
+            ).eq("tenant_id", tenant_id).eq("status", "active").execute()
+            
+            if not subscription_result.data:
+                return
+            
+            features = subscription_result.data[0].get("features", {})
+            if not features.get("conversational_dashboard", False):
+                return
+            
+            # Check alerts using dashboard
+            alerts = await self.dashboard.check_and_send_alerts(tenant_id)
+            
+            if alerts:
+                logger.info(f"Found {len(alerts)} alerts for tenant {tenant_id}")
+                
+                # Get seller phone to send alerts
+                config_result = self.db.table("whatsapp_configs").select(
+                    "seller_phone, phone_number, phone_number_id"
+                ).eq("tenant_id", tenant_id).execute()
+                
+                if config_result.data:
+                    config = config_result.data[0]
+                    seller_phone = config.get("seller_phone") or config.get("phone_number")
+                    phone_number_id = config.get("phone_number_id")
+                    
+                    if seller_phone and phone_number_id:
+                        # Send alerts via WhatsApp service
+                        from services.whatsapp.meta_service import MetaWhatsAppService
+                        whatsapp_service = MetaWhatsAppService()
+                        
+                        for alert_message in alerts:
+                            if alert_message:
+                                await whatsapp_service.send_message(
+                                    phone_number_id=phone_number_id,
+                                    to=seller_phone,
+                                    message=alert_message
+                                )
+                                logger.info(f"Alert sent to seller {seller_phone}")
+            
+        except Exception as e:
+            logger.error(f"Error checking alerts in background: {e}")
 
 # Global instance for backward compatibility
 bot_service = MetaWhatsAppBotService()

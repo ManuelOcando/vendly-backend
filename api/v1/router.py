@@ -3,7 +3,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from api.v1 import health, auth, items, categories, dashboard, storefront, orders, cart, customers, tenants, upload, whatsapp, legal
+from api.v1 import health, auth, items, categories, dashboard, storefront, orders, cart, customers, tenants, upload, whatsapp, legal, vendly_pro
 
 router = APIRouter(prefix="/api/v1")
 logger.info("Loading API v1 routers...")
@@ -21,5 +21,6 @@ router.include_router(cart.router, tags=["Cart"])
 router.include_router(customers.router, tags=["Customers"])
 router.include_router(tenants.router, tags=["Tenants"])
 router.include_router(upload.router, tags=["Upload"])
+router.include_router(vendly_pro.router, tags=["Vendly Pro"])
 
 logger.info("All API v1 routers loaded successfully")

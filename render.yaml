@@ -22,11 +22,21 @@ services:
         sync: false
       - key: UPSTASH_REDIS_TOKEN
         sync: false
-      - key: EVOLUTION_API_KEY
+      - key: META_WHATSAPP_PHONE_ID
+        sync: false
+      - key: META_WHATSAPP_TOKEN
+        sync: false
+      - key: META_WHATSAPP_BUSINESS_ID
+        sync: false
+      - key: META_WEBHOOK_VERIFY_TOKEN
         sync: false
       - key: GEMINI_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
         sync: false
       - key: RESEND_API_KEY
         sync: false
       - key: SENTRY_DSN
+        sync: false
+      - key: SUPABASE_SECRET_KEY
         sync: false

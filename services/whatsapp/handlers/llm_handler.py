@@ -28,8 +28,8 @@ class LLMHandler(BaseWhatsAppHandler):
         """
         settings = get_settings()
         
-        # Only handle if LLM fallback is enabled
-        if not settings.LLM_FALLBACK_ENABLED:
+        # Only handle if LLM is enabled
+        if not settings.LLM_ENABLED:
             return False
         
         # Check if we have API key configured for the selected provider

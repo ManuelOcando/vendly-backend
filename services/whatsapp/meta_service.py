@@ -3,6 +3,7 @@ Servicio para Meta WhatsApp Business API
 Documentación: https://developers.facebook.com/docs/whatsapp/cloud-api
 """
 import os
+import re
 import requests
 from typing import Optional, Dict, Any
 import logging
@@ -27,6 +28,10 @@ class MetaWhatsAppService:
     
     def _url(self, endpoint: str) -> str:
         return f"{self.BASE_URL}/{self.phone_number_id}{endpoint}"
+
+    def normalize_phone(self, phone: str) -> str:
+        """Normalizar número de teléfono eliminando +, - y espacios"""
+        return re.sub(r'[\+\-\s]', '', phone)
     
     def verify_credentials(self) -> Dict[str, Any]:
         """Verificar que las credenciales son válidas"""
@@ -140,21 +145,20 @@ class MetaWhatsAppService:
             logger.error(f"Failed to get phone numbers: {e}")
             return {"error": str(e)}
     
-    def send_text_message(self, to: str, message: str) -> Dict[str, Any]:
+    def send_message(self, to: str, message: str) -> Dict[str, Any]:
         """Enviar mensaje de texto simple"""
         logger.info(f"=== SENDING MESSAGE ===")
         logger.info(f"To: {to}, Message length: {len(message)}")
         logger.info(f"Using phone_number_id: {self.phone_number_id}")
         logger.info(f"Token prefix: {self.access_token[:15] if self.access_token else 'None'}...")
-        
-        # Formatear número (quitar + si existe)
-        phone = to.replace("+", "").replace("-", "").replace(" ", "")
+
+        phone = self.normalize_phone(to)
         logger.info(f"Formatted phone: {phone}")
-        
+
         try:
             url = self._url("/messages")
             logger.info(f"API URL: {url}")
-            
+
             payload = {
                 "messaging_product": "whatsapp",
                 "recipient_type": "individual",
@@ -166,18 +170,18 @@ class MetaWhatsAppService:
                 }
             }
             logger.info(f"Payload: {payload}")
-            
+
             response = requests.post(
                 url,
                 headers=self._headers(),
                 json=payload,
                 timeout=30
             )
-            
+
             data = response.json()
             logger.info(f"Meta API response status: {response.status_code}")
             logger.info(f"Meta API response: {data}")
-            
+
             if response.status_code == 200:
                 return {
                     "status": "sent",
@@ -192,7 +196,7 @@ class MetaWhatsAppService:
                     "code": data.get("error", {}).get("code", ""),
                     "details": data
                 }
-                
+
         except requests.exceptions.Timeout:
             logger.error(f"Timeout sending message to {phone}")
             return {"status": "failed", "error": "Timeout"}
@@ -201,14 +205,14 @@ class MetaWhatsAppService:
             import traceback
             logger.error(traceback.format_exc())
             return {"status": "failed", "error": str(e)}
-    
-    def send_message(self, to: str, message: str) -> Dict[str, Any]:
-        """Alias para send_text_message - enviar mensaje de texto"""
-        return self.send_text_message(to, message)
+
+    def send_text_message(self, to: str, message: str) -> Dict[str, Any]:
+        """Alias de send_message para compatibilidad hacia atrás"""
+        return self.send_message(to, message)
     
     def send_template_message(self, to: str, template_name: str, language: str = "es", components: list = None) -> Dict[str, Any]:
         """Enviar mensaje usando plantilla aprobada"""
-        phone = to.replace("+", "").replace("-", "").replace(" ", "")
+        phone = self.normalize_phone(to)
         
         payload = {
             "messaging_product": "whatsapp",
