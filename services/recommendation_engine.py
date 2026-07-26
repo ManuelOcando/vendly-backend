@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, date, timedelta
 from dataclasses import dataclass, field
 from enum import Enum
-from collections import defaultdict
+from collections import defaultdict, Counter
 import random
 
 from db.supabase import get_supabase_client
@@ -524,7 +524,7 @@ class RecommendationEngine:
         seasonal_categories = self._seasonal_categories.get(season, [])
         
         for product in available_products:
-            category_name = product.get("category_name", "").lower()
+            category_name = (product.get("category_name") or "").lower()
             
             # Check if product matches seasonal category
             for seasonal_cat in seasonal_categories:
@@ -557,26 +557,20 @@ class RecommendationEngine:
         candidates = []
         
         try:
-            # Query for promotional items
+            # Query for promotional items. There's no discount/original_price
+            # concept in the real items schema - is_featured is the one real
+            # column that expresses merchant-curated highlighting, so it's
+            # used as the "promotional" signal instead.
             result = self.db.table("items").select(
-                "id, name, price, original_price, category_id, image_url, stock_quantity"
-            ).eq("tenant_id", tenant_id).eq("is_active", True).execute()
-            
+                "id, name, price, category_id, is_featured, images, stock_quantity"
+            ).eq("tenant_id", tenant_id).eq("is_active", True).eq(
+                "is_featured", True
+            ).execute()
+
             if result.data:
-                # Filter for items with discount (original_price > price)
-                promotional = [
-                    item for item in result.data
-                    if item.get("original_price") and item.get("price")
-                    and item["original_price"] > item["price"]
-                ]
-                
-                for product in promotional[:limit]:
-                    discount_percent = (
-                        (product["original_price"] - product["price"])
-                        / product["original_price"]
-                        * 100
-                    )
-                    
+                category_names = await self._get_category_name_map(tenant_id)
+                for product in result.data[:limit]:
+                    product = self._enrich_product(product, category_names)
                     candidates.append(
                         RecommendationCandidate(
                             product=product,
@@ -586,15 +580,12 @@ class RecommendationEngine:
                                     RecommendationReason.CURRENTLY_ON_SALE
                                 ]
                             },
-                            metadata={
-                                "discount_percent": discount_percent,
-                                "original_price": product.get("original_price"),
-                            },
+                            metadata={},
                         )
                     )
         except Exception as e:
             logger.warning(f"Error getting promotional products: {e}")
-        
+
         return candidates
     
     # ============================================
@@ -660,32 +651,38 @@ class RecommendationEngine:
         candidates = []
         
         try:
-            # Get recently purchased products (last 7 days)
+            # Get recently purchased products (last 7 days). The Supabase
+            # client has no GROUP BY - fetch the raw rows in the window and
+            # count occurrences per product_id in Python instead.
             seven_days_ago = (datetime.now() - timedelta(days=7)).isoformat()
-            
+
             result = self.db.table("purchase_history").select(
-                "product_id, count"
+                "product_id"
             ).eq("tenant_id", tenant_id).gte(
                 "purchased_at", seven_days_ago
-            ).group("product_id").order("count", desc=True).limit(limit).execute()
-            
+            ).execute()
+
             if result.data:
-                product_counts = {item["product_id"]: item["count"] for item in result.data}
-                
+                product_counts = Counter(
+                    row["product_id"] for row in result.data if row.get("product_id")
+                )
+                top_product_ids = {pid for pid, _ in product_counts.most_common(limit)}
+
                 # Get product details
                 product_result = self.db.table("items").select(
-                    "id, name, price, category_id, image_url, stock_quantity"
-                ).eq("tenant_id, is_active", (tenant_id, True)).execute()
-                
+                    "id, name, price, category_id, images, stock_quantity"
+                ).eq("tenant_id", tenant_id).eq("is_active", True).execute()
+
                 if product_result.data:
+                    category_names = await self._get_category_name_map(tenant_id)
                     max_count = max(product_counts.values()) if product_counts else 1
-                    
+
                     for product in product_result.data:
-                        if product["id"] in product_counts:
+                        if product["id"] in top_product_ids:
                             score = product_counts[product["id"]] / max_count
                             candidates.append(
                                 RecommendationCandidate(
-                                    product=product,
+                                    product=self._enrich_product(product, category_names),
                                     scores={RecommendationType.TRENDING: score},
                                     reasons={
                                         RecommendationType.TRENDING: [
@@ -696,19 +693,20 @@ class RecommendationEngine:
                             )
         except Exception as e:
             logger.warning(f"Error getting trending products: {e}")
-        
+
         # Fallback: return random products if no trending data
         if not candidates:
             try:
                 result = self.db.table("items").select(
-                    "id, name, price, category_id, image_url, stock_quantity"
+                    "id, name, price, category_id, images, stock_quantity"
                 ).eq("tenant_id", tenant_id).eq("is_active", True).limit(limit).execute()
-                
+
                 if result.data:
+                    category_names = await self._get_category_name_map(tenant_id)
                     for product in result.data:
                         candidates.append(
                             RecommendationCandidate(
-                                product=product,
+                                product=self._enrich_product(product, category_names),
                                 scores={RecommendationType.TRENDING: 0.5},
                                 reasons={
                                     RecommendationType.TRENDING: [
@@ -719,7 +717,7 @@ class RecommendationEngine:
                         )
             except Exception as e:
                 logger.warning(f"Error getting fallback products: {e}")
-        
+
         return candidates
     
     # ============================================
@@ -965,6 +963,28 @@ class RecommendationEngine:
     # HELPER METHODS
     # ============================================
     
+    async def _get_category_name_map(self, tenant_id: str) -> Dict[str, str]:
+        """One-shot id -> name lookup for all of a tenant's categories, so
+        callers can attach category_name to product dicts without an
+        N+1 query per product."""
+        try:
+            result = self.db.table("categories").select("id, name").eq(
+                "tenant_id", tenant_id
+            ).execute()
+            return {row["id"]: row["name"] for row in (result.data or [])}
+        except Exception as e:
+            logger.warning(f"Error getting category names: {e}")
+            return {}
+
+    def _enrich_product(self, item: Dict[str, Any], category_names: Dict[str, str]) -> Dict[str, Any]:
+        """Attach the synthetic image_url/category_name keys the rest of this
+        module expects, derived from the real items schema (images: List[str],
+        category_id only - no image_url or category_name columns exist)."""
+        images = item.get("images") or []
+        item["image_url"] = images[0] if images else None
+        item["category_name"] = category_names.get(item.get("category_id"))
+        return item
+
     async def _get_available_products(
         self,
         tenant_id: str,
@@ -973,15 +993,19 @@ class RecommendationEngine:
         """Get available products for recommendations"""
         try:
             query = self.db.table("items").select(
-                "id, name, price, original_price, category_id, category_name, "
-                "image_url, stock_quantity, is_active"
+                "id, name, price, category_id, is_active, stock_quantity, "
+                "images, is_featured"
             ).eq("tenant_id", tenant_id).eq("is_active", True)
-            
+
             if request.max_price:
                 query = query.lte("price", request.max_price)
-            
+
             result = query.limit(200).execute()
-            return result.data if result.data else []
+            if not result.data:
+                return []
+
+            category_names = await self._get_category_name_map(tenant_id)
+            return [self._enrich_product(item, category_names) for item in result.data]
         except Exception as e:
             logger.warning(f"Error getting available products: {e}")
             return []
@@ -997,7 +1021,7 @@ class RecommendationEngine:
         
         try:
             result = self.db.table("items").select(
-                "id, name, category_id, category_name"
+                "id, name, category_id"
             ).eq("tenant_id", tenant_id).in_("id", product_ids).execute()
             return result.data if isinstance(result.data, list) else []
         except Exception as e:

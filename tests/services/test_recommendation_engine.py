@@ -202,48 +202,116 @@ class TestRecommendationEngine:
         assert isinstance(seasonal, list)
     
     @pytest.mark.asyncio
-    async def test_get_promotional_products(self, recommendation_engine, sample_tenant_id):
-        """Test promotional product generation"""
-        # Mock database response
-        recommendation_engine.db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
-            {"id": "prod-1", "name": "Sale Item", "price": 10.0, "original_price": 15.0,
-             "category_id": "cat-1", "image_url": None, "stock_quantity": 50}
-        ]
-        
+    async def test_get_available_products_enriches_image_and_category(
+        self, recommendation_engine, sample_recommendation_request, sample_tenant_id
+    ):
+        """Real items rows have `images: List[str]` and only `category_id` -
+        _get_available_products must synthesize image_url/category_name from
+        those instead of selecting non-existent columns."""
+        recommendation_engine.db.table = Mock(side_effect=self._make_table_router({
+            "items": Mock(data=[
+                {"id": "prod-1", "name": "Burger", "price": 8.5, "category_id": "cat-1",
+                 "is_active": True, "stock_quantity": 10, "images": ["https://x/burger.jpg"],
+                 "is_featured": False},
+                {"id": "prod-2", "name": "No Image", "price": 5.0, "category_id": None,
+                 "is_active": True, "stock_quantity": 5, "images": [], "is_featured": False},
+            ]),
+            "categories": Mock(data=[{"id": "cat-1", "name": "Comidas"}]),
+        }))
+
+        products = await recommendation_engine._get_available_products(
+            sample_tenant_id, sample_recommendation_request
+        )
+
+        assert len(products) == 2
+        assert products[0]["image_url"] == "https://x/burger.jpg"
+        assert products[0]["category_name"] == "Comidas"
+        # No images / unmapped category -> None, not a crash
+        assert products[1]["image_url"] is None
+        assert products[1]["category_name"] is None
+
+    def _make_table_router(self, canned: Dict[str, Any]):
+        """Build a db.table(name) side_effect that self-chains for any
+        select/eq/gte/limit/etc. call and returns a canned execute() result
+        per table name - avoids having to match exact chain depth/shape."""
+        def _table(name):
+            m = MagicMock()
+            m.select.return_value = m
+            m.eq.return_value = m
+            m.gte.return_value = m
+            m.lte.return_value = m
+            m.in_.return_value = m
+            m.order.return_value = m
+            m.limit.return_value = m
+            m.execute.return_value = canned.get(name, Mock(data=[]))
+            return m
+        return _table
+
+    @pytest.mark.asyncio
+    async def test_get_promotional_products_uses_is_featured(self, recommendation_engine, sample_tenant_id):
+        """Real items schema has no original_price/discount concept -
+        is_featured is the promotional signal."""
+        recommendation_engine.db.table = Mock(side_effect=self._make_table_router({
+            "items": Mock(data=[
+                {"id": "prod-1", "name": "Featured Item", "price": 10.0,
+                 "category_id": "cat-1", "is_featured": True, "images": [], "stock_quantity": 50}
+            ]),
+            "categories": Mock(data=[]),
+        }))
+
         promotional = await recommendation_engine._get_promotional_products(
             sample_tenant_id, limit=5
         )
-        
-        assert isinstance(promotional, list)
-        # Check that discount was calculated
-        if promotional:
-            assert promotional[0].metadata.get("discount_percent") == pytest.approx(33.33, 0.1)
-    
+
+        assert len(promotional) == 1
+        assert promotional[0].product["id"] == "prod-1"
+        assert promotional[0].scores[RecommendationType.PROMOTIONAL] == 0.8
+
     @pytest.mark.asyncio
-    async def test_get_trending_products(self, recommendation_engine, sample_tenant_id):
-        """Test trending product generation"""
-        # Mock database response
-        mock_response = Mock()
-        mock_response.data = []
-        
-        with patch.object(recommendation_engine.db.table("purchase_history"), 
-                         "select", return_value=Mock(
-                             eq=Mock(return_value=Mock(
-                                 gte=Mock(return_value=Mock(
-                                     group=Mock(return_value=Mock(
-                                         order=Mock(return_value=Mock(
-                                             limit=Mock(return_value=mock_response)
-                                         ))
-                                     ))
-                                 ))
-                             ))
-                         )):
-            trending = await recommendation_engine._get_trending_products(
-                sample_tenant_id, limit=5
-            )
-        
-        # Fallback should return products
-        assert isinstance(trending, list)
+    async def test_get_trending_products_counts_recent_purchases(self, recommendation_engine, sample_tenant_id):
+        """Trending should rank items by purchase_history frequency in the
+        last 7 days, counted in Python (no .group()/tuple-.eq() in the real
+        Supabase client)."""
+        recommendation_engine.db.table = Mock(side_effect=self._make_table_router({
+            "purchase_history": Mock(data=[
+                {"product_id": "prod-1"}, {"product_id": "prod-1"}, {"product_id": "prod-2"},
+            ]),
+            "items": Mock(data=[
+                {"id": "prod-1", "name": "Popular Item", "price": 10.0,
+                 "category_id": "cat-1", "images": [], "stock_quantity": 50},
+                {"id": "prod-2", "name": "Less Popular", "price": 5.0,
+                 "category_id": "cat-1", "images": [], "stock_quantity": 20},
+            ]),
+            "categories": Mock(data=[]),
+        }))
+
+        trending = await recommendation_engine._get_trending_products(
+            sample_tenant_id, limit=5
+        )
+
+        assert len(trending) == 2
+        by_id = {c.product["id"]: c for c in trending}
+        assert by_id["prod-1"].scores[RecommendationType.TRENDING] == 1.0  # max count
+        assert by_id["prod-2"].scores[RecommendationType.TRENDING] == 0.5  # half of max
+
+    @pytest.mark.asyncio
+    async def test_get_trending_products_falls_back_to_active_items(self, recommendation_engine, sample_tenant_id):
+        """No purchase history at all -> fall back to active items instead of an empty list."""
+        recommendation_engine.db.table = Mock(side_effect=self._make_table_router({
+            "purchase_history": Mock(data=[]),
+            "items": Mock(data=[
+                {"id": "prod-1", "name": "Any Item", "price": 10.0,
+                 "category_id": "cat-1", "images": [], "stock_quantity": 50},
+            ]),
+            "categories": Mock(data=[]),
+        }))
+
+        trending = await recommendation_engine._get_trending_products(
+            sample_tenant_id, limit=5
+        )
+
+        assert len(trending) == 1
+        assert trending[0].product["id"] == "prod-1"
     
     # ============================================
     # SCORING AND RANKING TESTS

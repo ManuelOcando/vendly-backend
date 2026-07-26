@@ -10,6 +10,11 @@ from datetime import datetime
 from .base import BaseWhatsAppHandler
 from db.redis import get_redis_client
 from services.whatsapp.meta_service import MetaWhatsAppService
+from services.customer_profile import CustomerProfileService
+from services.recommendation_engine import RecommendationEngine
+from services.recommendation_tracker import RecommendationTracker
+from models.recommendation import RecommendationRequest
+from api.deps import tenant_has_feature
 
 logger = logging.getLogger(__name__)
 
@@ -424,40 +429,87 @@ class CartHandler(BaseWhatsAppHandler):
         # Preserve original case of cart_id — only strip the "pedido:" prefix
         cart_id = raw_message[len("pedido:"):].strip()
         tenant_id = message_data.get("tenant_id")
+        phone = message_data.get("phone", "")
         session = message_data.get("session", {})
-        
+
         try:
             # Get cart directly from Redis (not via API endpoint)
             cart = await _get_cart_from_redis(cart_id)
-            
+
             if not cart:
                 return "El carrito ha expirado. Por favor, crea uno nuevo desde la tienda."
-            
+
             # Update session with cart_id and transition to viewing_cart
             session_id = session.get("id")
             if session_id:
                 await self.update_session_state(session_id, "viewing_cart", {"cart_id": cart_id})
-            
+
             # Send cart summary
             items_text = "\n".join([
                 f"{item['quantity']}x {item['name']} - ${item['price'] * item['quantity']:.2f}"
                 for item in cart["items"]
             ])
-            
+
             message = f"""¡Hola! Soy el asistente de Vendly.
 
 Tu pedido:
 {items_text}
 
-Total: ${cart['total']:.2f}
+Total: ${cart['total']:.2f}"""
 
-¿Deseas agregar algo más o confirmar el pedido?"""
-            
+            recommendations_section = await self._build_recommendations_section(tenant_id, phone, cart)
+            if recommendations_section:
+                message += f"\n\n{recommendations_section}"
+
+            message += "\n\n¿Deseas agregar algo más o confirmar el pedido?"
+
             return message
-            
+
         except Exception as e:
             logger.error(f"Error processing cart: {e}")
             return "No puedo encontrar tu carrito. Por favor, intenta nuevamente."
+
+    async def _build_recommendations_section(
+        self, tenant_id: str, phone: str, cart: Dict[str, Any]
+    ) -> Optional[str]:
+        """Build a short "you might also like" section based on what's
+        already in the cart. Premium-only (advanced_recommendations); never
+        raises - a failure here must not break the cart summary reply."""
+        try:
+            if not await tenant_has_feature(tenant_id, "advanced_recommendations"):
+                return None
+
+            # Ensure a profile row exists so generate_recommendations takes the
+            # real (cart-aware) path instead of always falling back to cold-start.
+            await CustomerProfileService(db=self.db).get_or_create_profile(tenant_id, phone)
+
+            cart_item_ids = [item["item_id"] for item in cart["items"]]
+            request = RecommendationRequest(
+                tenant_id=tenant_id,
+                customer_phone=phone,
+                limit=3,
+                exclude_product_ids=cart_item_ids,
+                current_cart_items=[{"product_id": item_id} for item_id in cart_item_ids],
+            )
+            response = await RecommendationEngine(db=self.db).generate_recommendations(request)
+
+            if not response.recommendations:
+                return None
+
+            tracker = RecommendationTracker(db=self.db)
+            lines = []
+            for rec in response.recommendations:
+                lines.append(f"• {rec.product_name} - ${rec.current_price:.2f}")
+                try:
+                    await tracker.track_shown(tenant_id, phone, rec.product_id, rec.recommendation_type)
+                except Exception as tracking_err:
+                    logger.warning(f"Could not track shown recommendation: {tracking_err}")
+
+            return "✨ También te puede interesar:\n" + "\n".join(lines)
+        except Exception as e:
+            logger.warning(f"Could not build recommendations for tenant {tenant_id}: {e}")
+            return None
+
 
 class CartConfirmationHandler(BaseWhatsAppHandler):
     """Handles cart confirmation and payment"""
@@ -499,10 +551,29 @@ class CartConfirmationHandler(BaseWhatsAppHandler):
             
             order_result = self.db.table("orders").insert(order_data).execute()
             order = order_result.data[0] if order_result.data else None
-            
+
             if not order:
                 return "Error al procesar tu pedido. Por favor, intenta nuevamente."
-            
+
+            # Record purchase history so future recommendations can be
+            # personalized for this customer. Never blocks order confirmation.
+            try:
+                purchase_items = [
+                    {
+                        "product_id": item["item_id"],
+                        "quantity": item["quantity"],
+                        "amount": item["price"] * item["quantity"],
+                    }
+                    for item in cart["items"]
+                ]
+                await CustomerProfileService(db=self.db).record_purchase(
+                    tenant_id, phone, order["id"], purchase_items
+                )
+            except Exception as history_err:
+                logger.warning(
+                    f"Could not record purchase history for tenant {tenant_id}: {history_err}"
+                )
+
             # Notify seller about new order
             try:
                 config_result = self.db.table("whatsapp_configs").select(
