@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from db.supabase import get_supabase_client
+from services.advanced_analytics_service import AdvancedAnalyticsService
 
 logger = logging.getLogger(__name__)
 
@@ -85,22 +86,31 @@ class ConversationalDashboard:
     
     def __init__(self, db=None):
         self.db = db or get_supabase_client()
-    
+        self.advanced_analytics = AdvancedAnalyticsService(db=self.db)
+
     async def process_seller_command(
-        self, 
-        tenant_id: str, 
-        seller_phone: str, 
+        self,
+        tenant_id: str,
+        seller_phone: str,
         command: str
     ) -> str:
         """Process seller commands like 'resumen', 'analytics', 'stock', 'alertas'"""
         command_lower = command.lower().strip()
-        
+
         if "resumen" in command_lower:
             summary_data = await self.get_daily_summary(tenant_id)
             return self._format_daily_summary(summary_data)
         elif "analytics" in command_lower or "estadísticas" in command_lower:
             analytics_data = await self.get_conversation_analytics(tenant_id)
             return self._format_conversation_analytics(analytics_data)
+        elif "tiempo respuesta" in command_lower or "tiempo de respuesta" in command_lower:
+            return await self._format_response_time(tenant_id)
+        elif "conversión" in command_lower or "conversion" in command_lower:
+            return await self._format_conversion_rate(tenant_id)
+        elif "horas pico" in command_lower or "horario pico" in command_lower:
+            return await self._format_peak_activity(tenant_id)
+        elif "reporte" in command_lower:
+            return await self.advanced_analytics.generate_daily_report(tenant_id)
         elif "stock" in command_lower or "inventario" in command_lower:
             if "actualizar" in command_lower:
                 return await self._process_stock_update(tenant_id, command)
@@ -311,7 +321,63 @@ class ConversationalDashboard:
         except Exception as e:
             logger.error(f"Error formatting conversation analytics: {e}")
             return "Error al generar análisis de conversaciones."
-    
+
+    async def _format_response_time(self, tenant_id: str) -> str:
+        """WhatsApp reply for the 'tiempo respuesta' seller command"""
+        try:
+            metrics = await self.advanced_analytics.get_response_time_metrics(tenant_id)
+            if metrics["sample_size"] == 0:
+                return "Todavía no hay suficientes conversaciones para calcular el tiempo de respuesta."
+
+            avg_seconds = metrics["avg_response_seconds"]
+            max_seconds = metrics["max_response_seconds"]
+            return (
+                "⏱️ *Tiempo de respuesta del bot*\n\n"
+                f"Promedio: {avg_seconds:.0f} segundos\n"
+                f"Máximo (pico): {max_seconds:.0f} segundos\n"
+                f"Basado en {metrics['sample_size']} respuestas de los últimos 7 días."
+            )
+        except Exception as e:
+            logger.error(f"Error formatting response time for tenant {tenant_id}: {e}")
+            return "Error al calcular el tiempo de respuesta."
+
+    async def _format_conversion_rate(self, tenant_id: str) -> str:
+        """WhatsApp reply for the 'conversión' seller command"""
+        try:
+            conversion = await self.advanced_analytics.get_conversion_rate(tenant_id)
+            return (
+                "📊 *Tasa de conversión (últimos 7 días)*\n\n"
+                f"Conversaciones: {conversion['unique_conversations']}\n"
+                f"Pedidos: {conversion['orders_count']}\n"
+                f"Tasa de conversión: {conversion['conversion_rate'] * 100:.1f}%"
+            )
+        except Exception as e:
+            logger.error(f"Error formatting conversion rate for tenant {tenant_id}: {e}")
+            return "Error al calcular la tasa de conversión."
+
+    async def _format_peak_activity(self, tenant_id: str) -> str:
+        """WhatsApp reply for the 'horas pico' seller command"""
+        try:
+            peak = await self.advanced_analytics.get_peak_activity(tenant_id)
+            if peak["peak_activity_hour"] is None:
+                return "Todavía no hay suficiente actividad para identificar horas pico."
+
+            message = (
+                "🕐 *Horas y días de mayor actividad (últimos 30 días)*\n\n"
+                f"Hora con más mensajes: {peak['peak_activity_hour']}:00\n"
+            )
+            if peak.get("peak_activity_day"):
+                message += f"Día con más mensajes: {peak['peak_activity_day']}\n"
+            if peak.get("peak_conversion_hour") is not None:
+                message += f"Hora con más pedidos: {peak['peak_conversion_hour']}:00\n"
+            if peak.get("peak_conversion_day"):
+                message += f"Día con más pedidos: {peak['peak_conversion_day']}\n"
+
+            return message
+        except Exception as e:
+            logger.error(f"Error formatting peak activity for tenant {tenant_id}: {e}")
+            return "Error al calcular las horas pico."
+
     async def send_smart_alert(
         self,
         tenant_id: str,

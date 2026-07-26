@@ -737,10 +737,85 @@ class TestConversationalDashboard:
         }
         
         message = dashboard._generate_alert_message(AlertType.NEGATIVE_FEEDBACK, data)
-        
+
         assert "ALERTA: Feedback Negativo" in message
         assert "+1234567890" in message
         assert "-0.8" in message
+
+
+class TestAdvancedAnalyticsCommands:
+    """Test the new WhatsApp seller commands that delegate to AdvancedAnalyticsService"""
+
+    @pytest.fixture
+    def dashboard(self):
+        return ConversationalDashboard(MagicMock())
+
+    @pytest.mark.asyncio
+    async def test_tiempo_respuesta_command_routes_correctly(self, dashboard):
+        dashboard.advanced_analytics.get_response_time_metrics = AsyncMock(return_value={
+            "avg_response_seconds": 42.0, "max_response_seconds": 100.0, "sample_size": 3,
+        })
+
+        response = await dashboard.process_seller_command("tenant-1", "+123", "tiempo respuesta")
+
+        assert "42 segundos" in response
+        assert "100 segundos" in response
+
+    @pytest.mark.asyncio
+    async def test_tiempo_de_respuesta_variant_also_routes(self, dashboard):
+        dashboard.advanced_analytics.get_response_time_metrics = AsyncMock(return_value={
+            "avg_response_seconds": None, "max_response_seconds": None, "sample_size": 0,
+        })
+
+        response = await dashboard.process_seller_command("tenant-1", "+123", "tiempo de respuesta")
+
+        assert "no hay suficientes conversaciones" in response
+
+    @pytest.mark.asyncio
+    async def test_conversion_command_routes_correctly(self, dashboard):
+        dashboard.advanced_analytics.get_conversion_rate = AsyncMock(return_value={
+            "period_days": 7, "unique_conversations": 10, "orders_count": 4, "conversion_rate": 0.4,
+        })
+
+        response = await dashboard.process_seller_command("tenant-1", "+123", "conversión")
+
+        assert "40.0%" in response
+        assert "10" in response
+        assert "4" in response
+
+    @pytest.mark.asyncio
+    async def test_horas_pico_command_routes_correctly(self, dashboard):
+        dashboard.advanced_analytics.get_peak_activity = AsyncMock(return_value={
+            "period_days": 30, "peak_activity_hour": 19, "peak_activity_day": "Friday",
+            "peak_conversion_hour": 20, "peak_conversion_day": "Saturday",
+        })
+
+        response = await dashboard.process_seller_command("tenant-1", "+123", "horas pico")
+
+        assert "19:00" in response
+        assert "Friday" in response
+        assert "20:00" in response
+        assert "Saturday" in response
+
+    @pytest.mark.asyncio
+    async def test_horas_pico_no_data(self, dashboard):
+        dashboard.advanced_analytics.get_peak_activity = AsyncMock(return_value={
+            "period_days": 30, "peak_activity_hour": None, "peak_activity_day": None,
+            "peak_conversion_hour": None, "peak_conversion_day": None,
+        })
+
+        response = await dashboard.process_seller_command("tenant-1", "+123", "horas pico")
+
+        assert "no hay suficiente actividad" in response
+
+    @pytest.mark.asyncio
+    async def test_reporte_command_delegates_to_daily_report(self, dashboard):
+        dashboard.advanced_analytics.generate_daily_report = AsyncMock(return_value="Reporte diario de prueba")
+
+        response = await dashboard.process_seller_command("tenant-1", "+123", "reporte")
+
+        assert response == "Reporte diario de prueba"
+        dashboard.advanced_analytics.generate_daily_report.assert_awaited_once_with("tenant-1")
 
 
 if __name__ == "__main__":
