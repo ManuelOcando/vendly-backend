@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 
 from .base import BaseWhatsAppHandler
 from services.conversational_dashboard import ConversationalDashboard, get_conversational_dashboard
+from api.deps import tenant_has_feature
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,11 @@ class SellerMenuHandler(BaseWhatsAppHandler):
         
         # Process command through Conversational Dashboard
         try:
+            if not await tenant_has_feature(tenant_id, "conversational_dashboard"):
+                return (
+                    "🔒 El panel conversacional (resumen, stock, alertas) es una función "
+                    "premium. Actualiza tu plan para acceder a este panel."
+                )
             response = await self.dashboard.process_seller_command(tenant_id, seller_phone, message)
             return response
         except Exception as e:

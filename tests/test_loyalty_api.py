@@ -13,12 +13,22 @@ from fastapi.testclient import TestClient
 from datetime import datetime
 
 from main import app
-from api.deps import get_current_tenant
+from api.deps import get_current_tenant, get_tenant_features
 from services.loyalty_service import PointsAward, TierBenefits
 from models.vendly_pro import LoyaltyTier, LoyaltyPointsResponse, LoyaltyRewardResponse
 
 
 client = TestClient(app)
+
+ALL_FEATURES_ENABLED = {
+    "bot_enabled": True,
+    "conversational_dashboard": True,
+    "loyalty_system": True,
+    "analytics": True,
+    "external_integrations": True,
+    "multi_language": True,
+    "advanced_recommendations": True,
+}
 
 
 def make_points_response(phone, balance, tier=LoyaltyTier.BRONZE, **overrides):
@@ -60,9 +70,13 @@ class TestLoyaltyAPI:
 
     @pytest.fixture(autouse=True)
     def override_tenant_dependency(self):
+        """These tests predate tier-gating and aren't about it - dedicated
+        gating behavior is covered in tests/api/test_subscription_gating.py."""
         app.dependency_overrides[get_current_tenant] = lambda: {"id": "test-tenant-123", "name": "Test Tenant"}
+        app.dependency_overrides[get_tenant_features] = lambda: ALL_FEATURES_ENABLED
         yield
         app.dependency_overrides.pop(get_current_tenant, None)
+        app.dependency_overrides.pop(get_tenant_features, None)
 
     @pytest.fixture
     def sample_tenant_headers(self):

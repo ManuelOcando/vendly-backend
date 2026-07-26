@@ -107,10 +107,12 @@ class TestSmartAlertsIntegration:
         tenant_id = "test-tenant-123"
         seller_phone = "+1234567890"
         
-        # Mock the dashboard's process_seller_command
-        with patch.object(seller_handler.dashboard, 'process_seller_command') as mock_process:
+        # Mock the dashboard's process_seller_command, and the tier-gating
+        # check (conversational_dashboard is a premium feature) as enabled
+        with patch.object(seller_handler.dashboard, 'process_seller_command') as mock_process, \
+             patch("services.whatsapp.handlers.seller.tenant_has_feature", new=AsyncMock(return_value=True)):
             mock_process.return_value = "✅ Alertas de stock configuradas con umbral de 10 unidades."
-            
+
             # Simulate seller sending alert configuration command
             message_data = {
                 "tenant_id": tenant_id,
@@ -118,9 +120,9 @@ class TestSmartAlertsIntegration:
                 "message": "configurar alertas stock 10",
                 "is_seller": True
             }
-            
+
             response = await seller_handler.handle(message_data)
-            
+
             assert response == "✅ Alertas de stock configuradas con umbral de 10 unidades."
             mock_process.assert_called_once_with(tenant_id, seller_phone, "configurar alertas stock 10")
     

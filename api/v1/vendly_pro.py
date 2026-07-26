@@ -7,8 +7,10 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime, date, timedelta
 import logging
 
-from api.deps import get_current_tenant
+from api.deps import get_current_tenant, require_feature
 from services.customer_profile import CustomerProfileService
+from services.multi_tenant_orchestrator import MultiTenantOrchestrator, _add_one_month
+from models.vendly_pro import PlanType, SubscriptionStatus
 from models.vendly_pro import (
     CustomerProfileResponse,
     CustomerProfileUpdate,
@@ -128,7 +130,8 @@ async def record_customer_purchase(
 @router.get("/customer-profiles/{customer_phone}/purchase-patterns", response_model=PurchasePatternsAnalysis)
 async def analyze_customer_purchase_patterns(
     customer_phone: str,
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("analytics"))
 ):
     """
     Analyze customer purchase patterns including frequency, seasonality, and basket analysis
@@ -147,7 +150,8 @@ async def analyze_customer_purchase_patterns(
 @router.get("/customer-profiles/{customer_phone}/behavior-insights", response_model=CustomerBehaviorInsights)
 async def get_customer_behavior_insights(
     customer_phone: str,
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("analytics"))
 ):
     """
     Get detailed customer behavior insights including purchase consistency, price sensitivity, and churn risk
@@ -166,6 +170,7 @@ async def get_customer_behavior_insights(
 @router.get("/purchase-trends", response_model=List[PurchaseTrends])
 async def get_purchase_trends(
     tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("analytics")),
     period_type: str = Query("monthly", pattern="^(daily|weekly|monthly)$"),
     period_count: int = Query(6, ge=1, le=24)
 ):
@@ -188,6 +193,7 @@ async def get_purchase_trends(
 @router.get("/customer-segments", response_model=List[CustomerSegment])
 async def get_customer_segments(
     tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("analytics")),
     segment_type: str = Query("rfm", pattern="^(rfm)$")
 ):
     """
@@ -207,6 +213,7 @@ async def get_customer_segments(
 @router.get("/product-affinity", response_model=List[ProductAffinityAnalysis])
 async def get_product_affinity(
     tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("analytics")),
     product_id: Optional[str] = None,
     limit: int = Query(10, ge=1, le=50)
 ):
@@ -229,6 +236,7 @@ async def get_product_affinity(
 @router.get("/top-customers")
 async def get_top_customers(
     tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("analytics")),
     metric: str = Query("total_spent", pattern="^(total_spent|purchase_count|recency|frequency)$"),
     limit: int = Query(10, ge=1, le=50)
 ):
@@ -251,6 +259,7 @@ async def get_top_customers(
 @router.get("/customers-by-spending")
 async def get_customers_by_spending(
     tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("analytics")),
     min_spent: float = Query(0, ge=0),
     max_spent: Optional[float] = Query(None, ge=0),
     limit: int = Query(50, ge=1, le=100)
@@ -275,6 +284,7 @@ async def get_customers_by_spending(
 async def get_customers_with_allergy(
     allergy: str,
     tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("analytics")),
     limit: int = Query(50, ge=1, le=100)
 ):
     """
@@ -298,6 +308,7 @@ async def get_customers_by_preference(
     preference_category: str,
     preference_value: str,
     tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("analytics")),
     limit: int = Query(50, ge=1, le=100)
 ):
     """
@@ -438,6 +449,56 @@ async def vendly_pro_health():
     }
 
 
+@router.put("/subscription")
+async def update_tenant_subscription(
+    plan_type: PlanType,
+    tenant: dict = Depends(get_current_tenant)
+):
+    """
+    Cambia el plan de suscripción del tenant (free/premium/enterprise) y
+    re-deriva sus features/limits automáticamente.
+
+    No procesa ningún pago: es un endpoint interno para uso manual mientras
+    no exista una pasarela de cobro (el pago se gestiona fuera de la app y
+    luego se refleja el plan aquí).
+    """
+    try:
+        orchestrator = MultiTenantOrchestrator()
+        features_limits = orchestrator._get_tier_features(plan_type)
+        subscription = await orchestrator.get_tenant_subscription(tenant["id"])
+
+        if subscription:
+            orchestrator.db.table("tenant_subscriptions").update({
+                "plan_type": plan_type.value,
+                "features": features_limits["features"],
+                "limits": features_limits["limits"],
+                "updated_at": datetime.now().isoformat()
+            }).eq("id", subscription["id"]).execute()
+        else:
+            now = datetime.now()
+            orchestrator.db.table("tenant_subscriptions").insert({
+                "tenant_id": tenant["id"],
+                "plan_type": plan_type.value,
+                "features": features_limits["features"],
+                "limits": features_limits["limits"],
+                "current_period_start": now.isoformat(),
+                "current_period_end": _add_one_month(now).isoformat(),
+                "status": SubscriptionStatus.ACTIVE.value
+            }).execute()
+
+        return {
+            "message": f"Plan actualizado a {plan_type.value}",
+            "plan_type": plan_type.value,
+            "features": features_limits["features"],
+            "limits": features_limits["limits"]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating tenant subscription: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ============================================
 # LOYALTY SYSTEM ENDPOINTS
 # ============================================
@@ -455,7 +516,8 @@ from models.vendly_pro import (
 @router.get("/loyalty/accounts/{customer_phone}", response_model=LoyaltyPointsResponse)
 async def get_loyalty_account(
     customer_phone: str,
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system"))
 ):
     """
     Get loyalty account for a customer
@@ -483,6 +545,7 @@ async def award_purchase_points(
     customer_phone: str,
     purchase_amount: float,
     tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system")),
     order_id: Optional[str] = None,
     method: str = "fixed_rate"
 ):
@@ -527,6 +590,7 @@ async def award_purchase_points(
 async def get_available_rewards(
     customer_phone: str,
     tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system")),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0)
 ):
@@ -550,7 +614,8 @@ async def get_available_rewards(
 async def redeem_reward(
     customer_phone: str,
     reward_id: str,
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system"))
 ):
     """
     Redeem points for a reward
@@ -579,6 +644,7 @@ async def redeem_reward(
 async def get_points_history(
     customer_phone: str,
     tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system")),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0)
 ):
@@ -601,6 +667,7 @@ async def get_points_history(
 @router.get("/loyalty/rewards", response_model=List[LoyaltyRewardResponse])
 async def get_all_rewards(
     tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system")),
     active_only: bool = Query(True),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0)
@@ -637,7 +704,8 @@ async def get_all_rewards(
 @router.post("/loyalty/rewards", response_model=LoyaltyRewardResponse)
 async def create_reward(
     reward_data: LoyaltyRewardCreate,
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system"))
 ):
     """
     Create a new loyalty reward
@@ -657,7 +725,8 @@ async def create_reward(
 async def update_reward(
     reward_id: str,
     update_data: LoyaltyRewardUpdate,
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system"))
 ):
     """
     Update a loyalty reward
@@ -677,7 +746,8 @@ async def update_reward(
 
 @router.get("/loyalty/program-summary", response_model=LoyaltyProgramSummary)
 async def get_loyalty_program_summary(
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system"))
 ):
     """
     Get summary of loyalty program performance
@@ -696,7 +766,8 @@ async def get_loyalty_program_summary(
 @router.post("/loyalty/accounts/{customer_phone}/birthday-bonus")
 async def award_birthday_bonus(
     customer_phone: str,
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system"))
 ):
     """
     Award birthday bonus points to customer
@@ -719,7 +790,8 @@ async def award_birthday_bonus(
 @router.get("/loyalty/tier-benefits/{tier}")
 async def get_tier_benefits(
     tier: str,
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system"))
 ):
     """
     Get benefits for a specific loyalty tier
@@ -764,6 +836,7 @@ async def get_tier_benefits(
 @router.get("/loyalty/top-customers-by-points")
 async def get_top_customers_by_points(
     tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system")),
     limit: int = Query(10, ge=1, le=50)
 ):
     """
@@ -810,6 +883,7 @@ from models.vendly_pro import (
 @router.get("/coupons", response_model=List[CouponResponse])
 async def get_all_coupons(
     tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system")),
     status: Optional[CouponStatus] = None,
     coupon_type: Optional[CouponType] = None,
     limit: int = Query(50, ge=1, le=200),
@@ -851,6 +925,7 @@ async def get_all_coupons(
 async def create_coupon(
     coupon_data: CouponCreate,
     tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system")),
     created_by: Optional[str] = None
 ):
     """
@@ -870,7 +945,8 @@ async def create_coupon(
 @router.get("/coupons/{coupon_id}", response_model=CouponResponse)
 async def get_coupon(
     coupon_id: str,
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system"))
 ):
     """
     Get coupon by ID
@@ -897,7 +973,8 @@ async def get_coupon(
 async def update_coupon(
     coupon_id: str,
     update_data: CouponUpdate,
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system"))
 ):
     """
     Update a coupon
@@ -920,7 +997,8 @@ async def validate_coupon(
     coupon_code: str = Query(..., min_length=6, max_length=50),
     customer_phone: str = Query(..., min_length=10, max_length=20),
     order_amount: float = Query(..., ge=0),
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system"))
 ):
     """
     Validate a coupon for use
@@ -944,7 +1022,8 @@ async def apply_coupon(
     customer_phone: str = Query(..., min_length=10, max_length=20),
     order_id: str = Query(...),
     order_amount: float = Query(..., ge=0),
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system"))
 ):
     """
     Apply a coupon to an order
@@ -974,6 +1053,7 @@ async def apply_coupon(
 async def get_customer_coupons(
     customer_phone: str,
     tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system")),
     status: Optional[CouponStatus] = None,
     coupon_type: Optional[CouponType] = None
 ):
@@ -1030,6 +1110,7 @@ async def get_customer_coupons(
 @router.get("/distribution/rules", response_model=List[AutomatedDistributionRuleResponse])
 async def get_distribution_rules(
     tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system")),
     rule_type: Optional[AutomatedDistributionRuleType] = None,
     status: Optional[DistributionRuleStatus] = None,
     limit: int = Query(50, ge=1, le=200),
@@ -1070,7 +1151,8 @@ async def get_distribution_rules(
 @router.post("/distribution/rules", response_model=AutomatedDistributionRuleResponse)
 async def create_distribution_rule(
     rule_data: AutomatedDistributionRuleCreate,
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system"))
 ):
     """
     Create a new automated distribution rule
@@ -1089,7 +1171,8 @@ async def create_distribution_rule(
 @router.get("/distribution/rules/{rule_id}", response_model=AutomatedDistributionRuleResponse)
 async def get_distribution_rule(
     rule_id: str,
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system"))
 ):
     """
     Get distribution rule by ID
@@ -1116,7 +1199,8 @@ async def get_distribution_rule(
 async def update_distribution_rule(
     rule_id: str,
     update_data: AutomatedDistributionRuleUpdate,
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system"))
 ):
     """
     Update a distribution rule
@@ -1136,7 +1220,8 @@ async def update_distribution_rule(
 
 @router.post("/distribution/process/birthday-coupons")
 async def process_birthday_coupons(
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system"))
 ):
     """
     Process birthday coupons for customers with birthdays today
@@ -1159,7 +1244,8 @@ async def process_birthday_coupons(
 
 @router.post("/distribution/process/anniversary-coupons")
 async def process_anniversary_coupons(
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system"))
 ):
     """
     Process anniversary coupons for customers with purchase anniversaries
@@ -1182,7 +1268,8 @@ async def process_anniversary_coupons(
 
 @router.get("/distribution/summary", response_model=AutomatedDistributionSummary)
 async def get_automated_distribution_summary(
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system"))
 ):
     """
     Get summary of automated distribution performance
@@ -1202,7 +1289,8 @@ async def get_automated_distribution_summary(
 async def test_distribution_rule(
     rule_id: str,
     test_customer_phone: str = Query(..., min_length=10, max_length=20),
-    tenant: dict = Depends(get_current_tenant)
+    tenant: dict = Depends(get_current_tenant),
+    _features: dict = Depends(require_feature("loyalty_system"))
 ):
     """
     Test a distribution rule for a specific customer

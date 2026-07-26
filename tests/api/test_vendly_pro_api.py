@@ -18,7 +18,18 @@ app = FastAPI()
 
 # Import and include the router with correct prefix
 from api.v1.vendly_pro import router as vendly_pro_router, get_current_tenant
+from api.deps import get_tenant_features
 app.include_router(vendly_pro_router, prefix="/api/v1")
+
+ALL_FEATURES_ENABLED = {
+    "bot_enabled": True,
+    "conversational_dashboard": True,
+    "loyalty_system": True,
+    "analytics": True,
+    "external_integrations": True,
+    "multi_language": True,
+    "advanced_recommendations": True,
+}
 
 
 class TestVendlyProAPI:
@@ -41,10 +52,17 @@ class TestVendlyProAPI:
         route-declaration time, so @patch("api.v1.vendly_pro.get_current_tenant")
         in individual tests has no effect on already-registered routes. Use a
         real dependency override instead.
+
+        Also overrides get_tenant_features (which require_feature(...) depends
+        on internally) to a fully-enabled plan, since these tests predate
+        tier-gating and aren't about it - dedicated gating behavior is covered
+        in tests/api/test_subscription_gating.py.
         """
         app.dependency_overrides[get_current_tenant] = lambda: mock_tenant
+        app.dependency_overrides[get_tenant_features] = lambda: ALL_FEATURES_ENABLED
         yield
         app.dependency_overrides.pop(get_current_tenant, None)
+        app.dependency_overrides.pop(get_tenant_features, None)
     
     @pytest.fixture
     def sample_customer_profile(self):

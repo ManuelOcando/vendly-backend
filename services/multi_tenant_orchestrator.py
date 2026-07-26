@@ -6,6 +6,7 @@ Implements multi-tenant architecture with industry-specific templates and automa
 """
 from typing import Dict, Any, Optional, List
 from datetime import datetime
+import calendar
 import logging
 import uuid
 
@@ -16,6 +17,17 @@ from models.vendly_pro import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _add_one_month(dt: datetime) -> datetime:
+    """Add one calendar month, rolling over the year and clamping the day
+    to the target month's last day (e.g. Jan 31 -> Feb 28/29)."""
+    if dt.month == 12:
+        year, month = dt.year + 1, 1
+    else:
+        year, month = dt.year, dt.month + 1
+    day = min(dt.day, calendar.monthrange(year, month)[1])
+    return dt.replace(year=year, month=month, day=day)
 
 
 class MultiTenantOrchestrator:
@@ -258,7 +270,7 @@ class MultiTenantOrchestrator:
                 features=features_limits["features"],
                 limits=features_limits["limits"],
                 current_period_start=datetime.now(),
-                current_period_end=datetime.now().replace(month=datetime.now().month + 1),
+                current_period_end=_add_one_month(datetime.now()),
                 status=SubscriptionStatus.ACTIVE
             )
             
