@@ -44,6 +44,8 @@ async def get_customer_profile(
             )
         
         return profile
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting customer profile: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -66,6 +68,8 @@ async def update_customer_profile(
         return updated_profile
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error updating customer profile: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -87,6 +91,8 @@ async def get_customer_purchase_history(
             tenant["id"], customer_phone, limit, offset
         )
         return history
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting purchase history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -112,6 +118,8 @@ async def record_customer_purchase(
             "records_created": len(created_records),
             "records": created_records
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error recording purchase: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -129,6 +137,8 @@ async def analyze_customer_purchase_patterns(
         service = CustomerProfileService()
         patterns = await service.analyze_purchase_patterns(tenant["id"], customer_phone)
         return patterns
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error analyzing purchase patterns: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -146,6 +156,8 @@ async def get_customer_behavior_insights(
         service = CustomerProfileService()
         insights = await service.get_customer_behavior_insights(tenant["id"], customer_phone)
         return insights
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting behavior insights: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -166,6 +178,8 @@ async def get_purchase_trends(
             tenant["id"], period_type, period_count
         )
         return trends
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting purchase trends: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -183,6 +197,8 @@ async def get_customer_segments(
         service = CustomerProfileService()
         segments = await service.get_customer_segments(tenant["id"], segment_type)
         return segments
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting customer segments: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -203,6 +219,8 @@ async def get_product_affinity(
             tenant["id"], product_id, limit
         )
         return affinity
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting product affinity: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -223,6 +241,8 @@ async def get_top_customers(
             tenant["id"], metric, limit
         )
         return top_customers
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting top customers: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -244,6 +264,8 @@ async def get_customers_by_spending(
             tenant["id"], min_spent, max_spent, limit
         )
         return customers
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting customers by spending: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -264,6 +286,8 @@ async def get_customers_with_allergy(
             tenant["id"], allergy, limit
         )
         return customers
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting customers with allergies: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -285,6 +309,8 @@ async def get_customers_by_preference(
             tenant["id"], preference_category, preference_value, limit
         )
         return customers
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting customers by preference: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -372,6 +398,8 @@ async def add_favorite_product(
             tenant["id"], customer_phone, product_id
         )
         return updated_profile
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error adding favorite product: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -443,6 +471,8 @@ async def get_loyalty_account(
             )
         
         return account
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting loyalty account: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -486,6 +516,8 @@ async def award_purchase_points(
                 "tier_multiplier": points_award.tier_multiplier
             }
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error awarding points: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -507,6 +539,8 @@ async def get_available_rewards(
             tenant["id"], customer_phone, limit, offset
         )
         return rewards
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting available rewards: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -534,6 +568,8 @@ async def redeem_reward(
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error redeeming reward: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -555,6 +591,8 @@ async def get_points_history(
             tenant["id"], customer_phone, limit, offset
         )
         return history
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting points history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -589,6 +627,8 @@ async def get_all_rewards(
             return [LoyaltyRewardResponse(**item) for item in result.data]
         
         return []
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting rewards: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -606,6 +646,8 @@ async def create_reward(
         service = LoyaltyService()
         reward = await service.create_reward(tenant["id"], reward_data)
         return reward
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating reward: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -626,6 +668,8 @@ async def update_reward(
         return reward
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error updating reward: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -642,6 +686,8 @@ async def get_loyalty_program_summary(
         service = LoyaltyService()
         summary = await service.get_loyalty_program_summary(tenant["id"])
         return summary
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting loyalty program summary: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -663,6 +709,8 @@ async def award_birthday_bonus(
             "message": "Birthday bonus awarded successfully",
             "account": account
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error awarding birthday bonus: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -732,6 +780,8 @@ async def get_top_customers_by_points(
             return [LoyaltyPointsResponse(**item) for item in result.data]
         
         return []
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting top customers: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -790,6 +840,8 @@ async def get_all_coupons(
             return [CouponResponse(**item) for item in result.data]
         
         return []
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting coupons: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -808,6 +860,8 @@ async def create_coupon(
         service = LoyaltyService()
         coupon = await service.create_coupon(tenant["id"], coupon_data, created_by)
         return coupon
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating coupon: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -832,6 +886,8 @@ async def get_coupon(
             )
         
         return coupon
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting coupon: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -852,6 +908,8 @@ async def update_coupon(
         return coupon
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error updating coupon: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -873,6 +931,8 @@ async def validate_coupon(
             tenant["id"], coupon_code, customer_phone, order_amount
         )
         return validation
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error validating coupon: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -903,6 +963,8 @@ async def apply_coupon(
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error applying coupon: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -954,6 +1016,8 @@ async def get_customer_coupons(
             expired_coupons=expired_coupons,
             total_savings=total_savings
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting customer coupons: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -996,6 +1060,8 @@ async def get_distribution_rules(
             return [AutomatedDistributionRuleResponse(**item) for item in result.data]
         
         return []
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting distribution rules: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1013,6 +1079,8 @@ async def create_distribution_rule(
         service = LoyaltyService()
         rule = await service.create_distribution_rule(tenant["id"], rule_data)
         return rule
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating distribution rule: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1037,6 +1105,8 @@ async def get_distribution_rule(
             )
         
         return rule
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting distribution rule: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1057,6 +1127,8 @@ async def update_distribution_rule(
         return rule
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error updating distribution rule: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1078,6 +1150,8 @@ async def process_birthday_coupons(
             "logs_processed": len(logs),
             "logs": logs
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing birthday coupons: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1099,6 +1173,8 @@ async def process_anniversary_coupons(
             "logs_processed": len(logs),
             "logs": logs
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing anniversary coupons: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1115,6 +1191,8 @@ async def get_automated_distribution_summary(
         service = LoyaltyService()
         summary = await service.get_automated_distribution_summary(tenant["id"])
         return summary
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting automated distribution summary: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1202,6 +1280,8 @@ async def test_distribution_rule(
                 "note": f"Rule type '{rule.rule_type.value}' requires specific trigger conditions"
             }
             
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error testing distribution rule: {e}")
         raise HTTPException(status_code=500, detail=str(e))

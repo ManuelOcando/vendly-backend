@@ -337,8 +337,9 @@ class TestLoyaltyService:
         
         # Configure side effect for get_loyalty_account calls
         mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.side_effect = [
-            reward_mock,  # First call: get reward
-            account_mock  # Second call: get account in redeem_points
+            reward_mock,  # First call: get_reward()
+            account_mock,  # Second call: get_or_create_loyalty_account() -> get_loyalty_account()
+            account_mock  # Third call: update_loyalty_account() re-fetches existing_account
         ]
         
         # Update account after redemption
@@ -508,15 +509,18 @@ class TestLoyaltyService:
             {"tier": "gold", "count": 1}
         ]
         
-        # Configure mock chain - simpler approach
-        # We'll patch the individual database calls in the method
-        with patch.object(loyalty_service.db.table.return_value.select.return_value.eq.return_value, 'execute', return_value=total_customers_mock):
-            with patch.object(loyalty_service.db.table.return_value.select.return_value.eq.return_value.gte.return_value, 'execute', return_value=active_customers_mock):
-                with patch.object(loyalty_service.db.table.return_value.select.return_value.eq.return_value, 'execute', side_effect=[points_sum_mock]):
-                    with patch.object(loyalty_service.db.table.return_value.select.return_value.eq.return_value.eq.return_value.order.return_value.limit.return_value, 'execute', return_value=top_rewards_mock):
-                        with patch.object(loyalty_service.db.table.return_value.select.return_value.eq.return_value.group.return_value, 'execute', return_value=tier_dist_mock):
-                            # Call method
-                            summary = await loyalty_service.get_loyalty_program_summary(sample_tenant_id)
+        # Configure mock chain. total_customers and points_sum share the same
+        # table().select().eq().execute() call shape, so they're distinguished
+        # by call order via side_effect rather than by patching a shared target twice.
+        loyalty_service.db.table.return_value.select.return_value.eq.return_value.execute.side_effect = [
+            total_customers_mock, points_sum_mock
+        ]
+        loyalty_service.db.table.return_value.select.return_value.eq.return_value.gte.return_value.execute.return_value = active_customers_mock
+        loyalty_service.db.table.return_value.select.return_value.eq.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value = top_rewards_mock
+        loyalty_service.db.table.return_value.select.return_value.eq.return_value.group.return_value.execute.return_value = tier_dist_mock
+
+        # Call method
+        summary = await loyalty_service.get_loyalty_program_summary(sample_tenant_id)
         
         # Verify results
         assert summary.total_customers == 3

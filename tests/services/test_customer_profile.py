@@ -519,8 +519,8 @@ class TestSQLFunctionLogic:
             {
                 "phone_number": "customer2",
                 "total_spent": 300.0,
-                "order_count": 8,
-                "days_since_last_purchase": 45
+                "order_count": 3,
+                "days_since_last_purchase": 200
             },
             {
                 "phone_number": "customer3",

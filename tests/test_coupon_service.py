@@ -435,10 +435,13 @@ class TestCouponService:
     async def test_process_birthday_coupons(self, loyalty_service, mock_db, sample_tenant_id, sample_distribution_rule):
         """Test processing birthday coupons"""
         # Mock database responses
-        # Get birthday rules
-        mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+        # Get birthday rules (tenant_id, rule_type, status -> 3 chained .eq() calls)
+        mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
             sample_distribution_rule.model_dump()
         ]
+
+        # _get_customers_with_birthday_today queries customer_profiles with a single .eq() call
+        mock_db.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
         
         # Create coupon
         coupon_data = {
@@ -492,8 +495,9 @@ class TestCouponService:
         # Note: Since _get_customers_with_birthday_today returns empty list by default,
         # no logs will be created in this test
         
-        # Verify database was called for rules query
-        mock_db.table.assert_called_with("automated_distribution_rules")
+        # Verify database was called for rules query (not necessarily the last
+        # call, since _get_customers_with_birthday_today queries customer_profiles afterward)
+        mock_db.table.assert_any_call("automated_distribution_rules")
     
     @pytest.mark.asyncio
     async def test_get_automated_distribution_summary(self, loyalty_service, mock_db, sample_tenant_id):
@@ -514,15 +518,15 @@ class TestCouponService:
             {"id": "rule-2", "status": "active"}
         ]
         
-        # Get distribution logs
+        # Get distribution logs (distributed_at drives the trends calculation)
         logs_mock = Mock()
         logs_mock.data = [
-            {"id": "log-1", "status": "success", "rule_id": "rule-1"},
-            {"id": "log-2", "status": "success", "rule_id": "rule-1"},
-            {"id": "log-3", "status": "failed", "rule_id": "rule-2"},
-            {"id": "log-4", "status": "success", "rule_id": "rule-1"}
+            {"id": "log-1", "status": "success", "rule_id": "rule-1", "distributed_at": "2026-07-01T10:00:00"},
+            {"id": "log-2", "status": "success", "rule_id": "rule-1", "distributed_at": "2026-07-01T11:00:00"},
+            {"id": "log-3", "status": "failed", "rule_id": "rule-2", "distributed_at": "2026-07-02T09:00:00"},
+            {"id": "log-4", "status": "success", "rule_id": "rule-1", "distributed_at": "2026-07-02T12:00:00"}
         ]
-        
+
         # Get coupons
         coupons_mock = Mock()
         coupons_mock.data = [
@@ -530,35 +534,30 @@ class TestCouponService:
             {"id": "coupon-2", "discount_value": 15.0, "coupon_type": "anniversary"},
             {"id": "coupon-3", "discount_value": 10.0, "coupon_type": "birthday"}
         ]
-        
-        # Get distribution trends
-        trends_mock = Mock()
-        trends_mock.data = [
-            {"date": "2024-01-01", "count": 5},
-            {"date": "2024-01-02", "count": 3}
-        ]
-        
-        # Configure mock chain
+
+        # Per-rule log counts for the top-rules loop (rule-1: 3, rule-2: 1, rule-3: 0)
+        rule1_logs_mock = Mock(count=3)
+        rule2_logs_mock = Mock(count=1)
+        rule3_logs_mock = Mock(count=0)
+
+        # Configure mock chains by shape, since several distinct queries share
+        # the same table().select().eq()...execute() call shape:
+        # - select().eq().execute() (1 eq): total rules, then distribution logs
+        # - select().eq().eq().execute() (2 eq): active rules, then one call per
+        #   rule in the top-rules loop (3 rules in this test)
+        # - select().eq().eq().or_().execute(): coupons generated
         mock_db.table.return_value.select.return_value.eq.return_value.execute.side_effect = [
-            rules_mock,  # First call: total rules
-            active_rules_mock,  # Second call: active rules
-            logs_mock,  # Third call: distribution logs
-            coupons_mock,  # Fourth call: coupons
-            trends_mock  # Fifth call: trends
+            rules_mock,  # total rules
+            logs_mock,  # distribution logs
         ]
-        
-        # Mock rule query for top rules
-        rule_mock = Mock()
-        rule_mock.data = [{"id": "rule-1", "rule_name": "Birthday Rule", "rule_type": "birthday"}]
-        
-        mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value = rule_mock
-        
-        # Mock group by query for rule counts
-        group_mock = Mock()
-        group_mock.data = [{"rule_id": "rule-1", "count": 3}]
-        
-        mock_db.table.return_value.select.return_value.eq.return_value.group.return_value.execute.return_value = group_mock
-        
+        mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.side_effect = [
+            active_rules_mock,  # active rules
+            rule1_logs_mock,  # top-rules loop: rule-1
+            rule2_logs_mock,  # top-rules loop: rule-2
+            rule3_logs_mock,  # top-rules loop: rule-3
+        ]
+        mock_db.table.return_value.select.return_value.eq.return_value.eq.return_value.or_.return_value.execute.return_value = coupons_mock
+
         # Call method
         summary = await loyalty_service.get_automated_distribution_summary(sample_tenant_id)
         

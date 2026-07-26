@@ -212,17 +212,20 @@ class RecommendationEngine:
         """Generate recommendations for new customers (cold start)"""
         # Get trending/popular products
         trending = await self._get_trending_products(request.tenant_id, request.limit)
-        
+
         # Get promotional products
         promotional = await self._get_promotional_products(
             request.tenant_id, request.limit
         )
-        
-        # Combine and deduplicate
+
+        # Combine and deduplicate. _get_trending_products/_get_promotional_products
+        # return RecommendationCandidate (raw product + scores), not the final
+        # RecommendationBase shape - convert before use.
         all_recs = []
         seen_ids = set()
-        
-        for rec in trending + promotional:
+
+        for candidate in trending + promotional:
+            rec = self._candidate_to_recommendation(candidate)
             if rec.product_id not in seen_ids and len(all_recs) < request.limit:
                 all_recs.append(rec)
                 seen_ids.add(rec.product_id)
@@ -373,33 +376,36 @@ class RecommendationEngine:
         
         # Fallback: get products from same categories as purchased items
         if not candidates and purchase_history:
-            purchased_products = await self._get_products_by_ids(
-                request.tenant_id, source_product_ids
-            )
-            
-            category_ids = set()
-            for p in purchased_products:
-                if p.get("category_id"):
-                    category_ids.add(p["category_id"])
-            
-            # Get products from related categories
-            for product in available_products:
-                if (
-                    product.get("category_id") in category_ids
-                    and product.get("id") not in source_product_ids
-                ):
-                    candidates.append(
-                        RecommendationCandidate(
-                            product=product,
-                            scores={RecommendationType.COMPLEMENTARY: 0.5},
-                            reasons={
-                                RecommendationType.COMPLEMENTARY: [
-                                    RecommendationReason.SIMILAR_TO_PREVIOUS_PURCHASES
-                                ]
-                            },
+            try:
+                purchased_products = await self._get_products_by_ids(
+                    request.tenant_id, source_product_ids
+                )
+
+                category_ids = set()
+                for p in purchased_products:
+                    if p.get("category_id"):
+                        category_ids.add(p["category_id"])
+
+                # Get products from related categories
+                for product in available_products:
+                    if (
+                        product.get("category_id") in category_ids
+                        and product.get("id") not in source_product_ids
+                    ):
+                        candidates.append(
+                            RecommendationCandidate(
+                                product=product,
+                                scores={RecommendationType.COMPLEMENTARY: 0.5},
+                                reasons={
+                                    RecommendationType.COMPLEMENTARY: [
+                                        RecommendationReason.SIMILAR_TO_PREVIOUS_PURCHASES
+                                    ]
+                                },
+                            )
                         )
-                    )
-        
+            except Exception as e:
+                logger.warning(f"Could not get category-based fallback candidates: {e}")
+
         return candidates
     
     # ============================================
@@ -877,12 +883,21 @@ class RecommendationEngine:
                 diverse.append(product)
                 category_counts[category] += 1
         
-        # If we removed too many, add back some from categories not at limit
+        # If we removed too many, add back some from categories not at limit -
+        # but never past max_per_category, or this would defeat the diversity cap.
         if len(diverse) < len(products) // 2:
             remaining = [p for p in products if p not in diverse]
             remaining.sort(key=lambda x: x.final_score, reverse=True)
-            diverse.extend(remaining[:len(products) // 2])
-        
+            needed = len(products) // 2 - len(diverse)
+            for product in remaining:
+                if needed <= 0:
+                    break
+                category = product.category or "unknown"
+                if category_counts[category] < max_per_category:
+                    diverse.append(product)
+                    category_counts[category] += 1
+                    needed -= 1
+
         return diverse
     
     def _generate_explanation(self, reason: RecommendationReason, product_name: str) -> str:
@@ -919,7 +934,33 @@ class RecommendationEngine:
             if original > current:
                 return round((original - current) / original * 100, 1)
         return None
-    
+
+    def _candidate_to_recommendation(self, candidate: RecommendationCandidate) -> RecommendationBase:
+        """Convert a raw candidate (used by cold-start's simpler algorithms,
+        which skip the full scoring pipeline) directly into a RecommendationBase."""
+        product = candidate.product
+        rec_type = next(iter(candidate.scores), RecommendationType.TRENDING)
+        score = candidate.scores.get(rec_type, 0.5)
+        reasons = candidate.reasons.get(rec_type) or [RecommendationReason.TRENDING_NOW]
+        reason = reasons[0]
+        stock_quantity = product.get("stock_quantity")
+
+        return RecommendationBase(
+            product_id=product.get("id", ""),
+            product_name=product.get("name", ""),
+            recommendation_type=rec_type,
+            reason=reason,
+            score=score,
+            explanation=self._generate_explanation(reason, product.get("name", "")),
+            original_price=product.get("original_price"),
+            current_price=product.get("price"),
+            discount_percent=self._calculate_discount_percent(product),
+            category=product.get("category_name") or product.get("category"),
+            image_url=product.get("image_url"),
+            in_stock=stock_quantity > 0 if stock_quantity is not None else True,
+            stock_quantity=stock_quantity,
+        )
+
     # ============================================
     # HELPER METHODS
     # ============================================
@@ -958,7 +999,7 @@ class RecommendationEngine:
             result = self.db.table("items").select(
                 "id, name, category_id, category_name"
             ).eq("tenant_id", tenant_id).in_("id", product_ids).execute()
-            return result.data if result.data else []
+            return result.data if isinstance(result.data, list) else []
         except Exception as e:
             logger.warning(f"Error getting products by IDs: {e}")
             return []

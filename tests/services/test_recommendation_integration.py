@@ -26,39 +26,81 @@ from models.vendly_pro import (
 )
 
 
+class FakeInteractionsDB:
+    """Minimal in-memory fake for the recommendation_interactions table.
+
+    Round-trips inserted rows so a test can insert() then select() and see
+    what it wrote - something a stateless Mock chain can't do.
+    """
+
+    def __init__(self):
+        self.records: List[Dict[str, Any]] = []
+        self._pending_insert = None
+
+    def table(self, name):
+        return self
+
+    def insert(self, data):
+        self._pending_insert = data
+        return self
+
+    def select(self, *args, **kwargs):
+        self._pending_insert = None
+        return self
+
+    def eq(self, *args, **kwargs):
+        return self
+
+    def gte(self, *args, **kwargs):
+        return self
+
+    def lte(self, *args, **kwargs):
+        return self
+
+    def order(self, *args, **kwargs):
+        return self
+
+    def limit(self, *args, **kwargs):
+        return self
+
+    def execute(self):
+        if self._pending_insert is not None:
+            record = dict(self._pending_insert)
+            record["id"] = f"interaction-{len(self.records) + 1}"
+            self.records.append(record)
+            self._pending_insert = None
+            return Mock(data=[record])
+        return Mock(data=list(self.records))
+
+
 class TestRecommendationIntegration:
     """Integration tests for the recommendation system"""
     
     @pytest.fixture
     def mock_db(self):
-        """Mock database client"""
+        """Mock database client.
+
+        All chainable methods self-chain back to `db`, so any query shape
+        (however many .eq()/.select()/etc. calls it makes) resolves to the
+        same db.execute() call. Individual tests can override
+        `db.execute.return_value`/`.side_effect` for specific scenarios.
+        The default (empty data) ensures unmocked queries degrade to "no
+        results" instead of leaking an unconfigured, non-iterable Mock.
+        """
         db = Mock()
-        
-        # Mock table chain for interactions
-        mock_table = Mock()
-        db.table.return_value = mock_table
-        
-        # Mock insert
-        mock_insert = Mock()
-        mock_insert.insert.return_value = mock_insert
-        mock_insert.execute.return_value = Mock(data=[{"id": "interaction-1"}])
-        
-        # Mock select
-        mock_select = Mock()
-        mock_select.select.return_value = mock_select
-        mock_execute = Mock()
-        mock_execute.data = []
-        mock_execute.count = 0
-        mock_select.execute.return_value = mock_execute
-        
-        # Setup eq chain
-        mock_eq = Mock()
-        mock_eq2 = Mock()
-        mock_eq.return_value = mock_eq
-        mock_eq2.return_value = mock_eq
-        mock_eq.eq.return_value = mock_eq2
-        mock_select.eq.return_value = mock_eq2
-        
+        db.table.return_value = db
+        db.select.return_value = db
+        db.eq.return_value = db
+        db.lte.return_value = db
+        db.gte.return_value = db
+        db.lt.return_value = db
+        db.in_.return_value = db
+        db.order.return_value = db
+        db.limit.return_value = db
+        db.insert.return_value = db
+        db.update.return_value = db
+        db.rpc.return_value = db
+        db.execute.return_value = Mock(data=[], count=0)
         return db
     
     @pytest.fixture
@@ -207,10 +249,10 @@ class TestRecommendationIntegration:
             return_value=sample_purchase_history
         )
         
-        # Mock product query
+        # Mock product query (real query chains .eq() twice: tenant_id, is_active)
         mock_result = Mock()
         mock_result.data = sample_available_products
-        recommendation_engine.db.table.return_value.select.return_value.eq.return_value.limit.return_value.execute = mock_result
+        recommendation_engine.db.table.return_value.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value = mock_result
         
         # Create request
         request = RecommendationRequest(
@@ -510,11 +552,12 @@ class TestRecommendationIntegration:
         recommendation_tracker,
         sample_customer_profile,
         sample_purchase_history,
+        sample_available_products,
         sample_tenant_id,
         sample_customer_phone,
     ):
         """Test complete flow from generating to tracking recommendations"""
-        
+
         # 1. Generate recommendations
         recommendation_engine.profile_service.get_profile = AsyncMock(
             return_value=sample_customer_profile
@@ -522,7 +565,19 @@ class TestRecommendationIntegration:
         recommendation_engine.profile_service.get_purchase_history = AsyncMock(
             return_value=sample_purchase_history
         )
-        
+
+        # Mock product query (real query chains .eq() twice: tenant_id, is_active)
+        mock_result = Mock()
+        mock_result.data = sample_available_products
+        recommendation_engine.db.table.return_value.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value = mock_result
+
+        # The engine and tracker query different tables (items/orders vs
+        # recommendation_interactions), so give the tracker its own tiny
+        # in-memory fake DB that actually round-trips inserted interactions -
+        # get_performance_metrics reads back what track_* wrote, which a
+        # shared, stateless Mock can't reproduce.
+        recommendation_tracker.db = FakeInteractionsDB()
+
         request = RecommendationRequest(
             tenant_id=sample_tenant_id,
             customer_phone=sample_customer_phone,
@@ -577,16 +632,24 @@ class TestRecommendationIntegration:
     async def test_cold_start_customer_flow(
         self,
         recommendation_engine,
+        sample_available_products,
         sample_tenant_id,
         sample_customer_phone,
     ):
         """Test recommendation flow for new customer (cold start)"""
-        
+
         # New customer - no profile
         recommendation_engine.profile_service.get_profile = AsyncMock(
             return_value=None
         )
-        
+
+        # Cold start falls back to trending/promotional products queried straight
+        # from "items" (select -> eq -> eq -> limit -> execute), since there's no
+        # purchase history to derive real trends from.
+        mock_result = Mock()
+        mock_result.data = sample_available_products
+        recommendation_engine.db.table.return_value.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value = mock_result
+
         request = RecommendationRequest(
             tenant_id=sample_tenant_id,
             customer_phone=sample_customer_phone,

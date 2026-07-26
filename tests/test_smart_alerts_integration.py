@@ -50,23 +50,29 @@ class TestSmartAlertsIntegration:
         tenant_id = "test-tenant-123"
         seller_phone = "+1234567890"
         
-        # 1. Mock alert configuration
-        mock_db.execute.side_effect = [
-            # Get alert config
-            Mock(data=[{
+        def config_mock():
+            return Mock(data=[{
                 "alert_type": "low_stock",
                 "enabled": True,
                 "threshold": 5,
                 "last_triggered": None
-            }]),
-            # Get low stock items
-            Mock(data=[
+            }])
+
+        # 1. Mock alert configuration.
+        # _check_low_stock does: get config, get items, then send_smart_alert
+        # (reusing that config) which updates last_triggered. The explicit
+        # send_smart_alert call below is a separate, fresh call that fetches
+        # its own config and updates last_triggered again.
+        mock_db.execute.side_effect = [
+            config_mock(),  # _check_low_stock: get alert config
+            Mock(data=[  # _check_low_stock: get low stock items
                 {"name": "Hamburguesa", "stock_quantity": 2},
                 {"name": "Papas Fritas", "stock_quantity": 10},
                 {"name": "Refresco", "stock_quantity": 1}
             ]),
-            # Update last triggered (for send_smart_alert)
-            Mock(data=[{"id": "config1"}])
+            Mock(data=[{"id": "config1"}]),  # _check_low_stock: update last triggered
+            config_mock(),  # send_smart_alert: get alert config
+            Mock(data=[{"id": "config1"}]),  # send_smart_alert: update last triggered
         ]
         
         # 2. Check for low stock alerts
@@ -179,11 +185,11 @@ class TestSmartAlertsIntegration:
             "last_triggered": old_time
         }]
         
-        # Mock update for last_triggered
-        mock_update = Mock()
-        mock_update.execute.return_value.data = [{"id": "config1"}]
-        mock_db.table.return_value.update.return_value.eq.return_value = mock_update
-        
+        # Note: no need to mock the update-last-triggered call separately here -
+        # its result is discarded by the implementation, and (because this
+        # fixture's mock methods all self-chain back to mock_db) overriding
+        # mock_db.eq.return_value would corrupt every other query in this test.
+
         alert_message = await dashboard.send_smart_alert(
             tenant_id=tenant_id,
             alert_type="low_stock",
@@ -225,11 +231,10 @@ class TestSmartAlertsIntegration:
             "last_triggered": None
         }]
         
-        # Mock update
-        mock_update = Mock()
-        mock_update.execute.return_value.data = [{"id": "config1"}]
-        mock_db.table.return_value.update.return_value.eq.return_value = mock_update
-        
+        # Note: no separate update mock here - see the comment above about this
+        # fixture's self-chaining mocks; the shared execute() return value
+        # (set above) already provides a non-empty `.data` for the update path.
+
         # Create updated config
         updated_config = type(config)(
             alert_type="low_stock",
@@ -248,20 +253,32 @@ class TestSmartAlertsIntegration:
         """Test realistic business scenario with multiple alert types"""
         tenant_id = "restaurant-123"
         
-        # Setup mock data for a restaurant scenario
+        # Setup mock data for a restaurant scenario.
+        # Route by the table name passed to .table(...) - it's the only call
+        # argument that reliably identifies which query is running, since this
+        # fixture's .select()/.eq()/etc. all self-chain back to the same mock_db
+        # object regardless of which logical query is in flight.
+        alert_configs_by_type = {
+            "low_stock": {"alert_type": "low_stock", "enabled": True, "threshold": 5},
+            "vip_customer": {"alert_type": "vip_customer", "enabled": True, "threshold": None},
+            "sales_anomaly": {"alert_type": "sales_anomaly", "enabled": True, "threshold": 0.5},
+            "negative_feedback": {"alert_type": "negative_feedback", "enabled": True, "threshold": None},
+        }
+
         def mock_execute_side_effect(*args, **kwargs):
-            # Simulate different queries based on context
-            query_str = str(mock_db.select.call_args)
-            
-            if "alert_configs" in query_str:
-                # Return all alert configs enabled
-                return Mock(data=[
-                    {"alert_type": "low_stock", "enabled": True, "threshold": 5},
-                    {"alert_type": "vip_customer", "enabled": True, "threshold": None},
-                    {"alert_type": "sales_anomaly", "enabled": True, "threshold": 0.5},
-                    {"alert_type": "negative_feedback", "enabled": True, "threshold": None}
-                ])
-            elif "items" in query_str and "stock_quantity" in query_str:
+            table_call = mock_db.table.call_args
+            table_name = table_call.args[0] if table_call and table_call.args else None
+
+            if table_name == "alert_configs":
+                # The alert_type filter is always the last .eq() call before .execute()
+                alert_type = None
+                for call in reversed(mock_db.eq.call_args_list):
+                    if call.args and call.args[0] == "alert_type":
+                        alert_type = call.args[1]
+                        break
+                config_data = alert_configs_by_type.get(alert_type)
+                return Mock(data=[config_data] if config_data else [])
+            elif table_name == "items":
                 # Low stock items for restaurant
                 return Mock(data=[
                     {"name": "Carne para Hamburguesa", "stock_quantity": 3},
@@ -270,29 +287,29 @@ class TestSmartAlertsIntegration:
                     {"name": "Lechuga", "stock_quantity": 0},  # Out of stock
                     {"name": "Tomate", "stock_quantity": 2}
                 ])
-            elif "customer_profiles" in query_str:
+            elif table_name == "customer_profiles":
                 # VIP customers
                 return Mock(data=[
                     {"phone_number": "+1234567890", "total_spent": 250.00},
                     {"phone_number": "+0987654321", "total_spent": 180.00}
                 ])
-            elif "orders" in query_str and "created_at" in query_str:
-                # Recent orders
+            elif table_name == "orders":
+                # Recent orders (used both for VIP order matching and sales anomaly detection)
                 return Mock(data=[
                     {"id": "order1", "total": "45.00", "created_at": "2024-01-01T12:00:00", "status": "completed"},
                     {"id": "order2", "total": "32.50", "created_at": "2024-01-01T13:00:00", "status": "completed"},
                     {"id": "order3", "total": "28.00", "created_at": "2024-01-01T14:00:00", "status": "completed"}
                 ])
-            elif "order_details" in query_str:
+            elif table_name == "order_details":
                 # Order details linking to VIP customer
                 return Mock(data=[{"customer_phone": "+1234567890"}])
-            elif "conversation_analytics" in query_str:
+            elif table_name == "conversation_analytics":
                 # Negative feedback
                 return Mock(data=[
                     {"customer_phone": "+5555555555", "sentiment_score": -0.7}
                 ])
             return Mock(data=[])
-        
+
         mock_db.execute.side_effect = mock_execute_side_effect
         
         # Check all alerts

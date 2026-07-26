@@ -213,14 +213,15 @@ class TestMigrationCompatibilityChecker:
                 execute_mock.data = []
                 execute_mock.count = 0
             
-            eq_mock = Mock(return_value=execute_mock)
-            select_mock = Mock(return_value=eq_mock)
-            mock_table.select = Mock(return_value=select_mock)
-            
+            mock_table.select.return_value = mock_table
+            mock_table.eq.return_value = mock_table
+            mock_table.limit.return_value = mock_table
+            mock_table.execute.return_value = execute_mock
+
             return mock_table
-        
+
         mock_db.table = Mock(side_effect=create_table_mock)
-        
+
         status = await compatibility_checker._check_customer_profiles_feature("tenant-1")
         
         assert status in [FeatureStatus.AVAILABLE, FeatureStatus.REQUIRES_SETUP]

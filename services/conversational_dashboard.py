@@ -14,7 +14,7 @@ from db.supabase import get_supabase_client
 logger = logging.getLogger(__name__)
 
 
-class AlertType(Enum):
+class AlertType(str, Enum):
     """Types of smart alerts"""
     LOW_STOCK = "low_stock"
     VIP_CUSTOMER = "vip_customer"
@@ -313,16 +313,25 @@ class ConversationalDashboard:
             return "Error al generar análisis de conversaciones."
     
     async def send_smart_alert(
-        self, 
-        tenant_id: str, 
+        self,
+        tenant_id: str,
         alert_type: AlertType,
-        data: Dict[str, Any]
+        data: Dict[str, Any],
+        config: Optional["AlertConfig"] = None
     ) -> str:
-        """Send proactive alert to seller"""
+        """Send proactive alert to seller.
+
+        `config` can be passed in by callers (like the `_check_*` methods)
+        that already fetched it, to avoid a redundant DB round-trip.
+        """
         try:
-            # Get alert configuration
-            config = await self._get_alert_config(tenant_id, alert_type)
-            
+            if isinstance(alert_type, str):
+                alert_type = AlertType(alert_type)
+
+            # Get alert configuration (unless already provided by the caller)
+            if config is None:
+                config = await self._get_alert_config(tenant_id, alert_type)
+
             if not config or not config.enabled:
                 logger.info(f"Alert {alert_type} disabled for tenant {tenant_id}")
                 return None
@@ -399,8 +408,10 @@ class ConversationalDashboard:
                 "stock_quantity", threshold
             ).execute()
             
-            low_stock_items = items_result.data if items_result.data else []
-            
+            low_stock_items = [
+                item for item in items_result.data if item.get("stock_quantity", 0) < threshold
+            ] if items_result.data else []
+
             if not low_stock_items:
                 return None
             
@@ -411,7 +422,7 @@ class ConversationalDashboard:
                 "total_low_stock": len(low_stock_items)
             }
             
-            return await self.send_smart_alert(tenant_id, AlertType.LOW_STOCK, alert_data)
+            return await self.send_smart_alert(tenant_id, AlertType.LOW_STOCK, alert_data, config=config)
             
         except Exception as e:
             logger.error(f"Error checking low stock: {e}")
@@ -466,7 +477,7 @@ class ConversationalDashboard:
                 "total_vip_orders": len(recent_vip_orders)
             }
             
-            return await self.send_smart_alert(tenant_id, AlertType.VIP_CUSTOMER, alert_data)
+            return await self.send_smart_alert(tenant_id, AlertType.VIP_CUSTOMER, alert_data, config=config)
             
         except Exception as e:
             logger.error(f"Error checking VIP customers: {e}")
@@ -531,7 +542,7 @@ class ConversationalDashboard:
                 "threshold_percentage": threshold * 100
             }
             
-            return await self.send_smart_alert(tenant_id, AlertType.SALES_ANOMALY, alert_data)
+            return await self.send_smart_alert(tenant_id, AlertType.SALES_ANOMALY, alert_data, config=config)
             
         except Exception as e:
             logger.error(f"Error checking sales anomalies: {e}")
@@ -566,7 +577,7 @@ class ConversationalDashboard:
                 "feedback_items": negative_feedback[:5]  # First 5 items
             }
             
-            return await self.send_smart_alert(tenant_id, AlertType.NEGATIVE_FEEDBACK, alert_data)
+            return await self.send_smart_alert(tenant_id, AlertType.NEGATIVE_FEEDBACK, alert_data, config=config)
             
         except Exception as e:
             logger.error(f"Error checking negative feedback: {e}")
@@ -575,6 +586,9 @@ class ConversationalDashboard:
     async def _get_alert_config(self, tenant_id: str, alert_type: AlertType) -> Optional[AlertConfig]:
         """Get alert configuration from database"""
         try:
+            if isinstance(alert_type, str) and not isinstance(alert_type, AlertType):
+                alert_type = AlertType(alert_type)
+
             result = self.db.table("alert_configs").select("*").eq(
                 "tenant_id", tenant_id
             ).eq("alert_type", alert_type.value).execute()
@@ -601,6 +615,9 @@ class ConversationalDashboard:
     async def _save_alert_config(self, tenant_id: str, config: AlertConfig) -> bool:
         """Save alert configuration to database"""
         try:
+            if isinstance(config.alert_type, str) and not isinstance(config.alert_type, AlertType):
+                config.alert_type = AlertType(config.alert_type)
+
             config_dict = config.to_dict()
             config_dict["tenant_id"] = tenant_id
             

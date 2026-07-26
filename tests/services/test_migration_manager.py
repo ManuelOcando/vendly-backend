@@ -323,13 +323,10 @@ class TestMigrationDataPreservation:
             else:
                 execute_mock.data = []
             
-            eq_mock = Mock(return_value=execute_mock)
-            order_mock = Mock(return_value=execute_mock)
-            order_mock.order = Mock(return_value=execute_mock)
-            select_mock = Mock(return_value=order_mock)
-            
-            mock_table.select = Mock(return_value=lambda: select_mock)
-            mock_table.select = Mock(return_value=order_mock)
+            mock_table.select.return_value = mock_table
+            mock_table.eq.return_value = mock_table
+            mock_table.order.return_value = mock_table
+            mock_table.execute.return_value = execute_mock
             
             return mock_table
         
@@ -365,13 +362,10 @@ class TestMigrationDataPreservation:
             else:
                 execute_mock.data = []
             
-            eq_mock = Mock(return_value=execute_mock)
-            order_mock = Mock(return_value=execute_mock)
-            order_mock.order = Mock(return_value=execute_mock)
-            select_mock = Mock(return_value=order_mock)
-            
-            mock_table.select = Mock(return_value=lambda: select_mock)
-            mock_table.select = Mock(return_value=order_mock)
+            mock_table.select.return_value = mock_table
+            mock_table.eq.return_value = mock_table
+            mock_table.order.return_value = mock_table
+            mock_table.execute.return_value = execute_mock
             
             return mock_table
         
@@ -405,13 +399,10 @@ class TestMigrationDataPreservation:
             else:
                 execute_mock.data = []
             
-            eq_mock = Mock(return_value=execute_mock)
-            order_mock = Mock(return_value=execute_mock)
-            order_mock.order = Mock(return_value=execute_mock)
-            select_mock = Mock(return_value=order_mock)
-            
-            mock_table.select = Mock(return_value=lambda: select_mock)
-            mock_table.select = Mock(return_value=order_mock)
+            mock_table.select.return_value = mock_table
+            mock_table.eq.return_value = mock_table
+            mock_table.order.return_value = mock_table
+            mock_table.execute.return_value = execute_mock
             
             return mock_table
         
@@ -456,14 +447,11 @@ class TestMigrationDataPreservation:
             else:
                 execute_mock.data = []
             
-            eq_mock = Mock(return_value=execute_mock)
-            order_mock = Mock(return_value=execute_mock)
-            order_mock.order = Mock(return_value=execute_mock)
-            order_mock.limit = Mock(return_value=execute_mock)
-            select_mock = Mock(return_value=order_mock)
-            
-            mock_table.select = Mock(return_value=lambda: select_mock)
-            mock_table.select = Mock(return_value=order_mock)
+            mock_table.select.return_value = mock_table
+            mock_table.eq.return_value = mock_table
+            mock_table.order.return_value = mock_table
+            mock_table.limit.return_value = mock_table
+            mock_table.execute.return_value = execute_mock
             
             return mock_table
         
@@ -710,13 +698,10 @@ class TestMigrationCompatibilityWithExistingFeatures:
             else:
                 execute_mock.data = []
             
-            eq_mock = Mock(return_value=execute_mock)
-            order_mock = Mock(return_value=execute_mock)
-            order_mock.order = Mock(return_value=execute_mock)
-            select_mock = Mock(return_value=order_mock)
-            
-            mock_table.select = Mock(return_value=lambda: select_mock)
-            mock_table.select = Mock(return_value=order_mock)
+            mock_table.select.return_value = mock_table
+            mock_table.eq.return_value = mock_table
+            mock_table.order.return_value = mock_table
+            mock_table.execute.return_value = execute_mock
             
             return mock_table
         
@@ -756,14 +741,12 @@ class TestMigrationCompatibilityWithExistingFeatures:
             else:
                 execute_mock.data = []
             
-            eq_mock = Mock(return_value=execute_mock)
-            select_mock = Mock(return_value=eq_mock)
-            
-            mock_table.select = Mock(return_value=lambda: select_mock)
-            mock_table.select = Mock(return_value=eq_mock)
-            
+            mock_table.select.return_value = mock_table
+            mock_table.eq.return_value = mock_table
+            mock_table.execute.return_value = execute_mock
+
             return mock_table
-        
+
         mock_db.table = Mock(side_effect=create_loyalty_ready_data)
         
         # Loyalty initialization should work with existing data

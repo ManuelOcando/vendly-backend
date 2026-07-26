@@ -17,22 +17,34 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 app = FastAPI()
 
 # Import and include the router with correct prefix
-from api.v1.vendly_pro import router as vendly_pro_router
+from api.v1.vendly_pro import router as vendly_pro_router, get_current_tenant
 app.include_router(vendly_pro_router, prefix="/api/v1")
 
 
 class TestVendlyProAPI:
     """Test Vendly Pro API endpoints"""
-    
+
     @pytest.fixture
     def client(self):
         """Create test client"""
         return TestClient(app)
-    
+
     @pytest.fixture
     def mock_tenant(self):
         """Mock tenant data"""
         return {"id": "tenant-123", "name": "Test Tenant"}
+
+    @pytest.fixture(autouse=True)
+    def override_tenant_dependency(self, mock_tenant):
+        """
+        FastAPI binds Depends(get_current_tenant) to the function object at
+        route-declaration time, so @patch("api.v1.vendly_pro.get_current_tenant")
+        in individual tests has no effect on already-registered routes. Use a
+        real dependency override instead.
+        """
+        app.dependency_overrides[get_current_tenant] = lambda: mock_tenant
+        yield
+        app.dependency_overrides.pop(get_current_tenant, None)
     
     @pytest.fixture
     def sample_customer_profile(self):

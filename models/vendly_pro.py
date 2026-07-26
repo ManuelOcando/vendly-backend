@@ -498,8 +498,8 @@ class PurchasePatternsAnalysis(BaseModel):
 
 class PurchaseTrends(BaseModel):
     """Purchase trends over time"""
-    period_start: date
-    period_end: date
+    period_start: datetime
+    period_end: datetime
     period_type: str  # 'daily', 'weekly', 'monthly'
     purchase_count: int
     total_amount: float
@@ -517,9 +517,11 @@ class CustomerBehaviorInsights(BaseModel):
     price_sensitivity: float  # 0-1 score
     time_preference: Optional[str] = None  # 'morning', 'afternoon', 'evening'
     day_preference: Optional[str] = None  # 'weekday', 'weekend'
-    predicted_next_purchase_date: Optional[date] = None
+    predicted_next_purchase_date: Optional[datetime] = None
     churn_risk_score: float  # 0-1 score
     lifetime_value_prediction: Optional[float] = None
+    insights_available: bool = True
+    recommendations: List[str] = []
 # ============================================
 # COUPON MODELS
 # ============================================
