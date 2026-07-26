@@ -14,36 +14,68 @@ from config import get_settings
 logger = logging.getLogger(__name__)
 
 
+# Keywords that must always be routed to a deterministic handler in the
+# fallback chain instead of the LLM, since the LLM has no grounding/tool-
+# calling for order data, appointments, etc. and would just chat generically.
+DETERMINISTIC_INTENT_KEYWORDS = [
+    # order status ("mi pedido" alone is deliberately excluded - too broad,
+    # would hijack normal LLM shopping conversation like "agregar a mi pedido")
+    "estado de mi pedido", "dónde está mi pedido", "donde esta mi pedido",
+    "seguimiento de mi pedido", "rastrear mi pedido",
+    # returns / changes
+    "devolver", "devolución", "devolucion", "reembolso", "cambiar mi pedido", "cambio de producto",
+    # service scheduling
+    "agendar", "reservar", "programar cita", "programar una cita", "cita", "cancelar mi cita",
+]
+
+
+def _is_deterministic_intent(message: str) -> bool:
+    """True if the message matches a keyword that must be handled by a
+    specific fallback-chain handler (order status/returns/scheduling),
+    never by the general-purpose LLM."""
+    normalized = message.lower().strip()
+    if normalized.startswith("pedido:"):
+        return True
+    return any(keyword in normalized for keyword in DETERMINISTIC_INTENT_KEYWORDS)
+
+
 class LLMHandler(BaseWhatsAppHandler):
     """
     Handler that uses LLM to process natural language messages.
     Supports multiple providers: Gemini, OpenRouter, etc.
     This is a fallback handler when other handlers don't match.
     """
-    
+
     async def can_handle(self, message_data: Dict[str, Any]) -> bool:
         """
         This handler can process any message that reaches it.
         It's designed to be a fallback in the chain.
         """
+        # Deterministic intents (storefront cart links, order status,
+        # returns, scheduling) must always go to their dedicated handler in
+        # the fallback chain, never to the LLM - it has no grounding for any
+        # of this data and would just produce a generic chat reply.
+        if _is_deterministic_intent(message_data.get("message", "")):
+            return False
+
         settings = get_settings()
-        
+
         # Only handle if LLM is enabled
         if not settings.LLM_ENABLED:
             return False
-        
+
         # Check if we have API key configured for the selected provider
         provider = getattr(settings, 'LLM_PROVIDER', 'gemini')
-        
+
         if provider == "gemini" and not settings.GEMINI_API_KEY:
             logger.warning("Gemini API key not configured, skipping LLM handler")
             return False
         elif provider == "openrouter" and not settings.OPENROUTER_API_KEY:
             logger.warning("OpenRouter API key not configured, skipping LLM handler")
             return False
-        
+
         return True
-    
+
     async def handle(self, message_data: Dict[str, Any]) -> Optional[str]:
         """
         Process message through LLM and return appropriate response

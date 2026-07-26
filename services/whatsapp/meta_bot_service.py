@@ -11,7 +11,7 @@ from db.supabase import get_supabase_client
 from services.whatsapp.handlers import (
     MenuHandler,
     CartHandler, CartConfirmationHandler, SellerMenuHandler, LLMHandler,
-    OnboardingHandler
+    OnboardingHandler, PostSaleHandler, ServiceSchedulingHandler
 )
 from services.conversational_dashboard import ConversationalDashboard
 
@@ -30,14 +30,19 @@ class MetaWhatsAppBotService:
         # LLM handler — first and primary respondent for customer messages
         self.llm_handler = LLMHandler(self.db)
 
-        # Fallback chain: CartHandler → CartConfirmationHandler → MenuHandler
+        # Fallback chain: CartHandler → CartConfirmationHandler → PostSaleHandler
+        # → ServiceSchedulingHandler → MenuHandler
         # (OrderConfirmationHandler not yet implemented, skipped)
         cart_handler = CartHandler(self.db)
         cart_confirmation_handler = CartConfirmationHandler(self.db)
+        post_sale_handler = PostSaleHandler(self.db)
+        scheduling_handler = ServiceSchedulingHandler(self.db)
         menu_handler = MenuHandler(self.db)
 
         cart_handler.next_handler = cart_confirmation_handler
-        cart_confirmation_handler.next_handler = menu_handler
+        cart_confirmation_handler.next_handler = post_sale_handler
+        post_sale_handler.next_handler = scheduling_handler
+        scheduling_handler.next_handler = menu_handler
 
         self.fallback_chain = cart_handler
 

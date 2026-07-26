@@ -12,6 +12,8 @@ from .customer import (
 from .seller import SellerMenuHandler
 from .llm_handler import LLMHandler
 from .onboarding import OnboardingHandler, OnboardingState
+from .post_sale import PostSaleHandler
+from .scheduling import ServiceSchedulingHandler
 
 __all__ = [
     # Base classes
@@ -34,5 +36,9 @@ __all__ = [
     
     # Onboarding handler
     "OnboardingHandler",
-    "OnboardingState"
+    "OnboardingState",
+
+    # Post-sale and scheduling handlers
+    "PostSaleHandler",
+    "ServiceSchedulingHandler",
 ]

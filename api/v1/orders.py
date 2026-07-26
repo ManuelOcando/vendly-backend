@@ -62,7 +62,7 @@ async def update_order_status(
     db = get_supabase_client()
 
     valid_statuses = [
-        "pending_payment", "payment_submitted", "payment_confirmed",
+        "payment_pending", "pending_payment", "payment_submitted", "payment_confirmed",
         "processing", "ready", "delivered", "cancelled"
     ]
 
