@@ -9,7 +9,7 @@ from datetime import datetime
 
 from db.supabase import get_supabase_client
 from services.whatsapp.handlers import (
-    MenuHandler,
+    MenuHandler, WelcomeHandler, ProductOrderHandler, ConfirmationHandler,
     CartHandler, CartConfirmationHandler, SellerMenuHandler, LLMHandler,
     OnboardingHandler, PostSaleHandler, ServiceSchedulingHandler
 )
@@ -34,19 +34,39 @@ class MetaWhatsAppBotService:
         # LLM handler — first and primary respondent for customer messages
         self.llm_handler = LLMHandler(self.db)
 
-        # Fallback chain: CartHandler → CartConfirmationHandler → PostSaleHandler
-        # → ServiceSchedulingHandler → MenuHandler
-        # (OrderConfirmationHandler not yet implemented, skipped)
+        # Fallback chain, used whenever the LLM is disabled, unconfigured or
+        # fails at runtime. It has to be able to carry a whole conversation on
+        # its own, so it runs from the most specific handler to the most
+        # greedy:
+        #   CartHandler            "pedido:<id>" prefix from the storefront
+        #   ConfirmationHandler    yes/no while products await confirmation
+        #   CartConfirmationHandler yes/no while viewing a storefront cart
+        #   PostSaleHandler        order status, returns, changes
+        #   ServiceSchedulingHandler appointment booking
+        #   MenuHandler            "menu"/"catalog" keywords
+        #   WelcomeHandler         a bare greeting on a fresh conversation
+        #   ProductOrderHandler    catch-all: treats the text as product names
+        #
+        # MenuHandler precedes WelcomeHandler so "hola, quiero ver el menu"
+        # answers with the catalog rather than a greeting, and
+        # ProductOrderHandler is last because its can_handle accepts nearly
+        # anything that isn't a known command.
         cart_handler = CartHandler(self.db)
+        confirmation_handler = ConfirmationHandler(self.db)
         cart_confirmation_handler = CartConfirmationHandler(self.db)
         post_sale_handler = PostSaleHandler(self.db)
         scheduling_handler = ServiceSchedulingHandler(self.db)
         menu_handler = MenuHandler(self.db)
+        welcome_handler = WelcomeHandler(self.db)
+        product_order_handler = ProductOrderHandler(self.db)
 
-        cart_handler.next_handler = cart_confirmation_handler
+        cart_handler.next_handler = confirmation_handler
+        confirmation_handler.next_handler = cart_confirmation_handler
         cart_confirmation_handler.next_handler = post_sale_handler
         post_sale_handler.next_handler = scheduling_handler
         scheduling_handler.next_handler = menu_handler
+        menu_handler.next_handler = welcome_handler
+        welcome_handler.next_handler = product_order_handler
 
         self.fallback_chain = cart_handler
 

@@ -206,11 +206,22 @@ class OfflineModeService:
         return not self._time_in_range(now_local.time(), open_str, close_str)
 
     def _time_in_range(self, current: time, open_str: str, close_str: str) -> bool:
+        """Whether `current` falls inside an open/close window.
+
+        Handles windows that cross midnight (a bar open 20:00-02:00): when
+        close is not after open, the range wraps to the next day, so being
+        past opening OR before closing counts as open. A plain
+        `open <= current < close` would report such a business as closed
+        around the clock.
+        """
         try:
             open_t = datetime.strptime(open_str, "%H:%M").time()
             close_t = datetime.strptime(close_str, "%H:%M").time()
         except ValueError:
             return True
+
+        if close_t <= open_t:
+            return current >= open_t or current < close_t
         return open_t <= current < close_t
 
     async def get_offline_reply(self, tenant_id: str, language: str = DEFAULT_LANGUAGE) -> str:

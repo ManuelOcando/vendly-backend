@@ -30,6 +30,11 @@ def make_table_router(canned: dict):
 
 TZ = ZoneInfo("America/Caracas")
 
+# Pinned so the open/close windows these tests build around "now" never
+# straddle midnight - with a wall-clock "now" of 00:01, now-5min lands on
+# the previous day and the assertions flip.
+FIXED_NOW = datetime(2026, 7, 15, 14, 30, tzinfo=TZ)  # a Wednesday
+
 
 class TestParseWeeklySchedule:
     def test_range_of_days_24h(self):
@@ -108,7 +113,7 @@ class TestIsOffline:
 
     @pytest.mark.asyncio
     async def test_day_closed_is_offline(self):
-        now = datetime.now(TZ)
+        now = FIXED_NOW
         weekday = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"][now.weekday()]
         db = MagicMock()
         db.table = Mock(side_effect=make_table_router({
@@ -124,7 +129,7 @@ class TestIsOffline:
 
     @pytest.mark.asyncio
     async def test_within_business_hours_is_online(self):
-        now = datetime.now(TZ)
+        now = FIXED_NOW
         weekday = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"][now.weekday()]
         open_str = (now - timedelta(minutes=5)).strftime("%H:%M")
         close_str = (now + timedelta(minutes=5)).strftime("%H:%M")
@@ -142,7 +147,7 @@ class TestIsOffline:
 
     @pytest.mark.asyncio
     async def test_outside_business_hours_is_offline(self):
-        now = datetime.now(TZ)
+        now = FIXED_NOW
         weekday = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"][now.weekday()]
         open_str = (now - timedelta(minutes=10)).strftime("%H:%M")
         close_str = (now - timedelta(minutes=5)).strftime("%H:%M")
@@ -158,9 +163,43 @@ class TestIsOffline:
 
         assert await service.is_offline("tenant-1", now=now) is True
 
+    def _overnight_service(self, now):
+        """A bar open 20:00-02:00 - the window wraps past midnight."""
+        weekday = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"][now.weekday()]
+        db = MagicMock()
+        db.table = Mock(side_effect=make_table_router({
+            "bot_configurations": Mock(data=[{
+                "bot_paused": False, "auto_reply_enabled": True,
+                "business_hours": {weekday: {"open": "20:00", "close": "02:00"}},
+            }]),
+            "business_hours_exceptions": Mock(data=[]),
+        }))
+        return OfflineModeService(db=db)
+
+    @pytest.mark.asyncio
+    async def test_overnight_hours_open_before_midnight(self):
+        now = FIXED_NOW.replace(hour=22, minute=0)
+        service = self._overnight_service(now)
+
+        assert await service.is_offline("tenant-1", now=now) is False
+
+    @pytest.mark.asyncio
+    async def test_overnight_hours_open_after_midnight(self):
+        now = FIXED_NOW.replace(hour=1, minute=0)
+        service = self._overnight_service(now)
+
+        assert await service.is_offline("tenant-1", now=now) is False
+
+    @pytest.mark.asyncio
+    async def test_overnight_hours_closed_during_the_day(self):
+        now = FIXED_NOW.replace(hour=15, minute=0)
+        service = self._overnight_service(now)
+
+        assert await service.is_offline("tenant-1", now=now) is True
+
     @pytest.mark.asyncio
     async def test_date_exception_closed_overrides_weekly_hours(self):
-        now = datetime.now(TZ)
+        now = FIXED_NOW
         weekday = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"][now.weekday()]
         db = MagicMock()
         db.table = Mock(side_effect=make_table_router({
@@ -177,7 +216,7 @@ class TestIsOffline:
 
     @pytest.mark.asyncio
     async def test_date_exception_special_hours(self):
-        now = datetime.now(TZ)
+        now = FIXED_NOW
         weekday = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"][now.weekday()]
         open_str = (now - timedelta(minutes=5)).strftime("%H:%M")
         close_str = (now + timedelta(minutes=5)).strftime("%H:%M")

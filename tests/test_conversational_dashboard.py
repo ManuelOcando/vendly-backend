@@ -9,9 +9,11 @@ import json
 import sys
 import os
 
-# Mock the database dependencies before importing ConversationalDashboard
-sys.modules['db.supabase'] = MagicMock()
-sys.modules['db.supabase'].get_supabase_client = MagicMock()
+# NOTE: this module used to replace sys.modules['db.supabase'] with a
+# MagicMock here. That is global and permanent - it leaked into every test
+# module importing db.supabase afterwards, which silently handed them a
+# MagicMock instead of the real client. It was never needed: every test
+# below constructs ConversationalDashboard with an explicit mock db.
 
 from services.conversational_dashboard import (
     ConversationalDashboard, 

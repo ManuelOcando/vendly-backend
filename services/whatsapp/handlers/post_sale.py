@@ -24,8 +24,16 @@ class PostSaleHandler(BaseWhatsAppHandler):
         if session_data.get("awaiting_satisfaction_for") and message.strip().isdigit():
             return True
 
-        # Don't intercept an active checkout flow - that belongs to CartHandler/CartConfirmationHandler
-        if session.get("current_state") in ("viewing_cart", "payment_pending"):
+        # Don't intercept an active checkout flow - that belongs to
+        # CartConfirmationHandler, which owns the `viewing_cart` state and
+        # reads a bare "sí" as "confirm my cart".
+        #
+        # `payment_pending` is deliberately NOT excluded: it is set once the
+        # order already exists and is never cleared, so excluding it locked a
+        # customer out of order-status/return requests forever after their
+        # first purchase. No handler claims that state, so there is nothing
+        # to defer to.
+        if session.get("current_state") == "viewing_cart":
             return False
 
         return any(

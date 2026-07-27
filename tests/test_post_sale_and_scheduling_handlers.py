@@ -79,9 +79,19 @@ class TestPostSaleHandlerCanHandle:
     @pytest.mark.asyncio
     async def test_defers_to_cart_flow_during_checkout(self):
         handler = PostSaleHandler(MagicMock())
-        session = {"id": "session-1", "current_state": "payment_pending", "session_data": {}}
+        session = {"id": "session-1", "current_state": "viewing_cart", "session_data": {}}
         result = await handler.can_handle(make_message_data("devolver", session=session))
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_still_handles_requests_after_an_order_was_placed(self):
+        """`payment_pending` is set when the order is created and never
+        cleared, so treating it as "checkout in progress" locked customers
+        out of post-sale support for good after their first purchase."""
+        handler = PostSaleHandler(MagicMock())
+        session = {"id": "session-1", "current_state": "payment_pending", "session_data": {}}
+        result = await handler.can_handle(make_message_data("devolver", session=session))
+        assert result is True
 
     @pytest.mark.asyncio
     async def test_pending_satisfaction_rating_takes_priority(self):
