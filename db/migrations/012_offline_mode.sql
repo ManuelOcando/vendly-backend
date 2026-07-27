@@ -31,6 +31,7 @@ CREATE INDEX IF NOT EXISTS idx_offline_messages_pending ON offline_messages(tena
 
 ALTER TABLE offline_messages ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "offline_messages_tenant_isolation" ON offline_messages;
 CREATE POLICY "offline_messages_tenant_isolation" ON offline_messages
     FOR ALL USING (tenant_id = current_setting('app.current_tenant_id')::uuid);
 
@@ -57,5 +58,6 @@ CREATE INDEX IF NOT EXISTS idx_business_hours_exceptions_date ON business_hours_
 
 ALTER TABLE business_hours_exceptions ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "business_hours_exceptions_tenant_isolation" ON business_hours_exceptions;
 CREATE POLICY "business_hours_exceptions_tenant_isolation" ON business_hours_exceptions
     FOR ALL USING (tenant_id = current_setting('app.current_tenant_id')::uuid);

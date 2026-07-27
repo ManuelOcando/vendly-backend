@@ -120,15 +120,19 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
+DROP TRIGGER IF EXISTS update_whatsapp_connections_updated_at ON whatsapp_connections;
 CREATE TRIGGER update_whatsapp_connections_updated_at BEFORE UPDATE ON whatsapp_connections 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_order_status_updated_at ON order_status;
 CREATE TRIGGER update_order_status_updated_at BEFORE UPDATE ON order_status 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_bot_configurations_updated_at ON bot_configurations;
 CREATE TRIGGER update_bot_configurations_updated_at BEFORE UPDATE ON bot_configurations 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_conversation_sessions_updated_at ON conversation_sessions;
 CREATE TRIGGER update_conversation_sessions_updated_at BEFORE UPDATE ON conversation_sessions 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 

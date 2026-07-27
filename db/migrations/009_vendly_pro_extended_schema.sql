@@ -209,76 +209,76 @@ ALTER TABLE industry_templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tenant_subscriptions ENABLE ROW LEVEL SECURITY;
 
 -- Customer Profiles RLS Policies
-CREATE POLICY "Tenants can only access their own customer profiles" 
-    ON customer_profiles FOR ALL 
+DROP POLICY IF EXISTS "Tenants can only access their own customer profiles" ON customer_profiles;
+CREATE POLICY "Tenants can only access their own customer profiles" ON customer_profiles FOR ALL 
     USING (tenant_id = current_setting('app.current_tenant_id')::uuid);
 
-CREATE POLICY "System admins can access all customer profiles" 
-    ON customer_profiles FOR ALL 
+DROP POLICY IF EXISTS "System admins can access all customer profiles" ON customer_profiles;
+CREATE POLICY "System admins can access all customer profiles" ON customer_profiles FOR ALL 
     USING (current_setting('app.current_user_role') = 'admin');
 
 -- Purchase History RLS Policies
-CREATE POLICY "Tenants can only access their own purchase history" 
-    ON purchase_history FOR ALL 
+DROP POLICY IF EXISTS "Tenants can only access their own purchase history" ON purchase_history;
+CREATE POLICY "Tenants can only access their own purchase history" ON purchase_history FOR ALL 
     USING (tenant_id = current_setting('app.current_tenant_id')::uuid);
 
-CREATE POLICY "System admins can access all purchase history" 
-    ON purchase_history FOR ALL 
+DROP POLICY IF EXISTS "System admins can access all purchase history" ON purchase_history;
+CREATE POLICY "System admins can access all purchase history" ON purchase_history FOR ALL 
     USING (current_setting('app.current_user_role') = 'admin');
 
 -- Loyalty Points RLS Policies
-CREATE POLICY "Tenants can only access their own loyalty points" 
-    ON loyalty_points FOR ALL 
+DROP POLICY IF EXISTS "Tenants can only access their own loyalty points" ON loyalty_points;
+CREATE POLICY "Tenants can only access their own loyalty points" ON loyalty_points FOR ALL 
     USING (tenant_id = current_setting('app.current_tenant_id')::uuid);
 
-CREATE POLICY "System admins can access all loyalty points" 
-    ON loyalty_points FOR ALL 
+DROP POLICY IF EXISTS "System admins can access all loyalty points" ON loyalty_points;
+CREATE POLICY "System admins can access all loyalty points" ON loyalty_points FOR ALL 
     USING (current_setting('app.current_user_role') = 'admin');
 
 -- Loyalty Rewards RLS Policies
-CREATE POLICY "Tenants can only access their own loyalty rewards" 
-    ON loyalty_rewards FOR ALL 
+DROP POLICY IF EXISTS "Tenants can only access their own loyalty rewards" ON loyalty_rewards;
+CREATE POLICY "Tenants can only access their own loyalty rewards" ON loyalty_rewards FOR ALL 
     USING (tenant_id = current_setting('app.current_tenant_id')::uuid);
 
-CREATE POLICY "System admins can access all loyalty rewards" 
-    ON loyalty_rewards FOR ALL 
+DROP POLICY IF EXISTS "System admins can access all loyalty rewards" ON loyalty_rewards;
+CREATE POLICY "System admins can access all loyalty rewards" ON loyalty_rewards FOR ALL 
     USING (current_setting('app.current_user_role') = 'admin');
 
 -- Conversation Analytics RLS Policies
-CREATE POLICY "Tenants can only access their own conversation analytics" 
-    ON conversation_analytics FOR ALL 
+DROP POLICY IF EXISTS "Tenants can only access their own conversation analytics" ON conversation_analytics;
+CREATE POLICY "Tenants can only access their own conversation analytics" ON conversation_analytics FOR ALL 
     USING (tenant_id = current_setting('app.current_tenant_id')::uuid);
 
-CREATE POLICY "System admins can access all conversation analytics" 
-    ON conversation_analytics FOR ALL 
+DROP POLICY IF EXISTS "System admins can access all conversation analytics" ON conversation_analytics;
+CREATE POLICY "System admins can access all conversation analytics" ON conversation_analytics FOR ALL 
     USING (current_setting('app.current_user_role') = 'admin');
 
 -- Automated Responses RLS Policies
-CREATE POLICY "Tenants can only access their own automated responses" 
-    ON automated_responses FOR ALL 
+DROP POLICY IF EXISTS "Tenants can only access their own automated responses" ON automated_responses;
+CREATE POLICY "Tenants can only access their own automated responses" ON automated_responses FOR ALL 
     USING (tenant_id = current_setting('app.current_tenant_id')::uuid);
 
-CREATE POLICY "System admins can access all automated responses" 
-    ON automated_responses FOR ALL 
+DROP POLICY IF EXISTS "System admins can access all automated responses" ON automated_responses;
+CREATE POLICY "System admins can access all automated responses" ON automated_responses FOR ALL 
     USING (current_setting('app.current_user_role') = 'admin');
 
 -- Industry Templates RLS Policies
 -- Industry templates are shared across all tenants (read-only)
-CREATE POLICY "All tenants can read industry templates" 
-    ON industry_templates FOR SELECT 
+DROP POLICY IF EXISTS "All tenants can read industry templates" ON industry_templates;
+CREATE POLICY "All tenants can read industry templates" ON industry_templates FOR SELECT 
     USING (true);
 
-CREATE POLICY "Only system admins can modify industry templates" 
-    ON industry_templates FOR ALL 
+DROP POLICY IF EXISTS "Only system admins can modify industry templates" ON industry_templates;
+CREATE POLICY "Only system admins can modify industry templates" ON industry_templates FOR ALL 
     USING (current_setting('app.current_user_role') = 'admin');
 
 -- Tenant Subscriptions RLS Policies
-CREATE POLICY "Tenants can only access their own subscriptions" 
-    ON tenant_subscriptions FOR ALL 
+DROP POLICY IF EXISTS "Tenants can only access their own subscriptions" ON tenant_subscriptions;
+CREATE POLICY "Tenants can only access their own subscriptions" ON tenant_subscriptions FOR ALL 
     USING (tenant_id = current_setting('app.current_tenant_id')::uuid);
 
-CREATE POLICY "System admins can access all subscriptions" 
-    ON tenant_subscriptions FOR ALL 
+DROP POLICY IF EXISTS "System admins can access all subscriptions" ON tenant_subscriptions;
+CREATE POLICY "System admins can access all subscriptions" ON tenant_subscriptions FOR ALL 
     USING (current_setting('app.current_user_role') = 'admin');
 
 -- ============================================
@@ -288,21 +288,27 @@ CREATE POLICY "System admins can access all subscriptions"
 -- Reuse existing update_updated_at_column function from migration 001
 -- Add triggers for new tables
 
+DROP TRIGGER IF EXISTS update_customer_profiles_updated_at ON customer_profiles;
 CREATE TRIGGER update_customer_profiles_updated_at BEFORE UPDATE ON customer_profiles 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_loyalty_points_updated_at ON loyalty_points;
 CREATE TRIGGER update_loyalty_points_updated_at BEFORE UPDATE ON loyalty_points 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_loyalty_rewards_updated_at ON loyalty_rewards;
 CREATE TRIGGER update_loyalty_rewards_updated_at BEFORE UPDATE ON loyalty_rewards 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_automated_responses_updated_at ON automated_responses;
 CREATE TRIGGER update_automated_responses_updated_at BEFORE UPDATE ON automated_responses 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_industry_templates_updated_at ON industry_templates;
 CREATE TRIGGER update_industry_templates_updated_at BEFORE UPDATE ON industry_templates 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_tenant_subscriptions_updated_at ON tenant_subscriptions;
 CREATE TRIGGER update_tenant_subscriptions_updated_at BEFORE UPDATE ON tenant_subscriptions 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 

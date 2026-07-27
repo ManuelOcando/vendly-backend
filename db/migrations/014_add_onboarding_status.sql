@@ -30,7 +30,8 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
-CREATE TRIGGER IF NOT EXISTS update_conversation_sessions_updated_at
+DROP TRIGGER IF EXISTS update_conversation_sessions_updated_at ON conversation_sessions;
+CREATE TRIGGER update_conversation_sessions_updated_at
     BEFORE UPDATE ON conversation_sessions
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
@@ -44,8 +45,8 @@ BEGIN
 END $$;
 
 -- Policy: Users can read their own conversation sessions
-CREATE POLICY "Users can view their own conversation sessions"
-    ON conversation_sessions
+DROP POLICY IF EXISTS "Users can view their own conversation sessions" ON conversation_sessions;
+CREATE POLICY "Users can view their own conversation sessions" ON conversation_sessions
     FOR SELECT
     USING (
         EXISTS (
@@ -56,8 +57,8 @@ CREATE POLICY "Users can view their own conversation sessions"
     );
 
 -- Policy: Users can insert their own conversation sessions
-CREATE POLICY "Users can insert their own conversation sessions"
-    ON conversation_sessions
+DROP POLICY IF EXISTS "Users can insert their own conversation sessions" ON conversation_sessions;
+CREATE POLICY "Users can insert their own conversation sessions" ON conversation_sessions
     FOR INSERT
     WITH CHECK (
         EXISTS (
@@ -68,8 +69,8 @@ CREATE POLICY "Users can insert their own conversation sessions"
     );
 
 -- Policy: Users can update their own conversation sessions
-CREATE POLICY "Users can update their own conversation sessions"
-    ON conversation_sessions
+DROP POLICY IF EXISTS "Users can update their own conversation sessions" ON conversation_sessions;
+CREATE POLICY "Users can update their own conversation sessions" ON conversation_sessions
     FOR UPDATE
     USING (
         EXISTS (

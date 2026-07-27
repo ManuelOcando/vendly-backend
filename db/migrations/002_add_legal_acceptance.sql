@@ -29,7 +29,8 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
-CREATE TRIGGER IF NOT EXISTS update_user_legal_acceptance_updated_at
+DROP TRIGGER IF EXISTS update_user_legal_acceptance_updated_at ON user_legal_acceptance;
+CREATE TRIGGER update_user_legal_acceptance_updated_at
     BEFORE UPDATE ON user_legal_acceptance
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
@@ -38,26 +39,26 @@ CREATE TRIGGER IF NOT EXISTS update_user_legal_acceptance_updated_at
 ALTER TABLE user_legal_acceptance ENABLE ROW LEVEL SECURITY;
 
 -- Policy: Users can read their own acceptance records
-CREATE POLICY "Users can view their own legal acceptance"
-    ON user_legal_acceptance
+DROP POLICY IF EXISTS "Users can view their own legal acceptance" ON user_legal_acceptance;
+CREATE POLICY "Users can view their own legal acceptance" ON user_legal_acceptance
     FOR SELECT
     USING (auth.uid() = user_id);
 
 -- Policy: Users can insert their own acceptance records
-CREATE POLICY "Users can insert their own legal acceptance"
-    ON user_legal_acceptance
+DROP POLICY IF EXISTS "Users can insert their own legal acceptance" ON user_legal_acceptance;
+CREATE POLICY "Users can insert their own legal acceptance" ON user_legal_acceptance
     FOR INSERT
     WITH CHECK (auth.uid() = user_id);
 
 -- Policy: Users can update their own acceptance records
-CREATE POLICY "Users can update their own legal acceptance"
-    ON user_legal_acceptance
+DROP POLICY IF EXISTS "Users can update their own legal acceptance" ON user_legal_acceptance;
+CREATE POLICY "Users can update their own legal acceptance" ON user_legal_acceptance
     FOR UPDATE
     USING (auth.uid() = user_id);
 
 -- Policy: Admins can view all records (create admin role check)
-CREATE POLICY "Admins can view all legal acceptance"
-    ON user_legal_acceptance
+DROP POLICY IF EXISTS "Admins can view all legal acceptance" ON user_legal_acceptance;
+CREATE POLICY "Admins can view all legal acceptance" ON user_legal_acceptance
     FOR SELECT
     USING (
         EXISTS (

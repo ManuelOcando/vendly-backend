@@ -29,9 +29,11 @@ CREATE INDEX IF NOT EXISTS idx_post_sale_requests_order ON post_sale_requests(or
 
 ALTER TABLE post_sale_requests ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "post_sale_requests_tenant_isolation" ON post_sale_requests;
 CREATE POLICY "post_sale_requests_tenant_isolation" ON post_sale_requests
     FOR ALL USING (tenant_id = current_setting('app.current_tenant_id')::uuid);
 
+DROP TRIGGER IF EXISTS update_post_sale_requests_updated_at ON post_sale_requests;
 CREATE TRIGGER update_post_sale_requests_updated_at BEFORE UPDATE ON post_sale_requests
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
@@ -66,9 +68,11 @@ CREATE INDEX IF NOT EXISTS idx_appointments_reminders ON appointments(status, sc
 
 ALTER TABLE appointments ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "appointments_tenant_isolation" ON appointments;
 CREATE POLICY "appointments_tenant_isolation" ON appointments
     FOR ALL USING (tenant_id = current_setting('app.current_tenant_id')::uuid);
 
+DROP TRIGGER IF EXISTS update_appointments_updated_at ON appointments;
 CREATE TRIGGER update_appointments_updated_at BEFORE UPDATE ON appointments
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 

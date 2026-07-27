@@ -78,7 +78,7 @@ class TestMigration008:
     def test_migration_executes_without_errors(self):
         """Verificar que la migración se puede ejecutar sin errores."""
         # Este test verifica que el archivo SQL es válido
-        migration_path = Path(__file__).parent.parent / "migrations" / "008_remove_evolution_api.sql"
+        migration_path = Path(__file__).parent.parent / "db" / "migrations" / "008_remove_evolution_api.sql"
         
         assert migration_path.exists(), f"Archivo de migración no encontrado: {migration_path}"
         

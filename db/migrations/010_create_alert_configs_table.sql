@@ -25,6 +25,7 @@ CREATE INDEX IF NOT EXISTS idx_alert_configs_last_triggered ON alert_configs(las
 ALTER TABLE alert_configs ENABLE ROW LEVEL SECURITY;
 
 -- Create RLS policy: tenants can only access their own alert configs
+DROP POLICY IF EXISTS "alert_configs_tenant_isolation" ON alert_configs;
 CREATE POLICY "alert_configs_tenant_isolation" ON alert_configs
     FOR ALL USING (tenant_id = current_setting('app.current_tenant_id')::uuid);
 
@@ -69,5 +70,6 @@ CREATE INDEX IF NOT EXISTS idx_alert_logs_alert_type ON alert_logs(alert_type);
 ALTER TABLE alert_logs ENABLE ROW LEVEL SECURITY;
 
 -- Create RLS policy: tenants can only access their own alert logs
+DROP POLICY IF EXISTS "alert_logs_tenant_isolation" ON alert_logs;
 CREATE POLICY "alert_logs_tenant_isolation" ON alert_logs
     FOR ALL USING (tenant_id = current_setting('app.current_tenant_id')::uuid);

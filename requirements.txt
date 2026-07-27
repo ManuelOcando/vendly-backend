@@ -10,5 +10,9 @@ redis>=5.0.0,<6.0.0
 slowapi>=0.1.9,<1.0.0
 requests>=2.31.0,<3.0.0
 
+# Direct Postgres access, used only by scripts/migrate.py - the app itself
+# talks to the database through the Supabase REST client.
+psycopg[binary]>=3.2,<4.0
+
 # LLM Providers
 google-generativeai>=0.7.0,<1.0.0  # Gemini

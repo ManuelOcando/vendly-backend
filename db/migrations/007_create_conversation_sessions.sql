@@ -38,6 +38,7 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
+DROP TRIGGER IF EXISTS update_conversation_sessions_updated_at ON conversation_sessions;
 CREATE TRIGGER update_conversation_sessions_updated_at 
 BEFORE UPDATE ON conversation_sessions 
 FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

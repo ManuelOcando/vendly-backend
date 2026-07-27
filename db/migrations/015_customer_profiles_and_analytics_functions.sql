@@ -91,8 +91,8 @@ CREATE INDEX IF NOT EXISTS idx_purchase_history_customer_date
 ALTER TABLE customer_profiles ENABLE ROW LEVEL SECURITY;
 
 -- Policy: Tenants can only access their own customer profiles
-CREATE POLICY "Tenants can access their own customer profiles"
-    ON customer_profiles
+DROP POLICY IF EXISTS "Tenants can access their own customer profiles" ON customer_profiles;
+CREATE POLICY "Tenants can access their own customer profiles" ON customer_profiles
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id')::uuid);
 
@@ -100,8 +100,8 @@ CREATE POLICY "Tenants can access their own customer profiles"
 ALTER TABLE purchase_history ENABLE ROW LEVEL SECURITY;
 
 -- Policy: Tenants can only access their own purchase history
-CREATE POLICY "Tenants can access their own purchase history"
-    ON purchase_history
+DROP POLICY IF EXISTS "Tenants can access their own purchase history" ON purchase_history;
+CREATE POLICY "Tenants can access their own purchase history" ON purchase_history
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id')::uuid);
 
@@ -147,7 +147,8 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Create trigger to update customer profile on purchase
-CREATE TRIGGER IF NOT EXISTS trigger_update_customer_profile_on_purchase
+DROP TRIGGER IF EXISTS trigger_update_customer_profile_on_purchase ON purchase_history;
+CREATE TRIGGER trigger_update_customer_profile_on_purchase
     AFTER INSERT ON purchase_history
     FOR EACH ROW
     EXECUTE FUNCTION update_customer_profile_on_purchase();
@@ -162,7 +163,8 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Create trigger to update updated_at on customer_profiles
-CREATE TRIGGER IF NOT EXISTS update_customer_profiles_updated_at
+DROP TRIGGER IF EXISTS update_customer_profiles_updated_at ON customer_profiles;
+CREATE TRIGGER update_customer_profiles_updated_at
     BEFORE UPDATE ON customer_profiles
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
