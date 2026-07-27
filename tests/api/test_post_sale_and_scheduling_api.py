@@ -109,7 +109,7 @@ class TestAppointmentsAPI:
     def test_cancel_appointment_success(self, client):
         with patch("api.v1.scheduling.SchedulingService") as mock_service_cls:
             mock_service_cls.return_value.cancel_appointment = AsyncMock(
-                return_value={"success": True, "message": "Tu cita fue cancelada."}
+                return_value={"success": True, "message_key": "scheduling.cancel_success"}
             )
             response = client.put(
                 "/api/v1/appointments/appt-1/cancel", json={"reason": "no puedo asistir"}
@@ -123,7 +123,11 @@ class TestAppointmentsAPI:
     def test_cancel_appointment_blocked_by_policy_returns_400(self, client):
         with patch("api.v1.scheduling.SchedulingService") as mock_service_cls:
             mock_service_cls.return_value.cancel_appointment = AsyncMock(
-                return_value={"success": False, "message": "Debes cancelar con 24h de anticipación."}
+                return_value={
+                    "success": False,
+                    "message_key": "scheduling.cancel_policy",
+                    "message_params": {"hours": 24},
+                }
             )
             response = client.put("/api/v1/appointments/appt-1/cancel", json={})
 

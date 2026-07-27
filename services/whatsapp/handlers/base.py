@@ -83,15 +83,33 @@ class BaseWhatsAppHandler(MessageHandler):
             return {}
     
     async def update_session_state(self, session_id: str, state: str, data: Dict = None):
-        """Update session state and data"""
+        """Update session state, merging `data` into the existing session_data.
+
+        Merges rather than replaces: callers pass partial dicts (just
+        {"cart": ...} or {"cart_id": ...}), and a straight overwrite used to
+        wipe every other key - conversation history, detected language, a
+        pending satisfaction rating - depending on which handler wrote last.
+        """
         try:
             update_data = {
                 "current_state": state,
                 "updated_at": datetime.now().isoformat()
             }
             if data:
-                update_data["session_data"] = data
-            
+                update_data["session_data"] = {**self._read_session_data(session_id), **data}
+
             self.db.table("conversation_sessions").update(update_data).eq("id", session_id).execute()
         except Exception as e:
             logger.error(f"Error updating session: {e}")
+
+    def _read_session_data(self, session_id: str) -> Dict:
+        """Current session_data for a session, or {} if unavailable."""
+        try:
+            result = self.db.table("conversation_sessions").select(
+                "session_data"
+            ).eq("id", session_id).limit(1).execute()
+            if result.data:
+                return result.data[0].get("session_data") or {}
+        except Exception as e:
+            logger.warning(f"Could not read session_data for {session_id}: {e}")
+        return {}

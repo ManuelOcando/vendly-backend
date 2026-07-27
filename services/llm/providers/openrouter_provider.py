@@ -6,7 +6,7 @@ import json
 import logging
 import httpx
 from typing import Dict, Any, List, Optional
-from .base import LLMProvider
+from .base import LLMProvider, language_directive as _language_directive
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,8 @@ class OpenRouterProvider(LLMProvider):
         self,
         store_name: str,
         personality: Dict[str, Any],
-        available_products: List[Dict[str, Any]]
+        available_products: List[Dict[str, Any]],
+        language: str = "es"
     ) -> str:
         """
         Build system prompt with store context and personality
@@ -110,16 +111,17 @@ class OpenRouterProvider(LLMProvider):
         tone = personality.get("tone", "casual")
         use_emojis = personality.get("use_emojis", True)
         greeting_style = personality.get("greeting_style", "¡Hola! 👋 Bienvenido a {store_name}")
-        
+
         # Format products list
         products_text = "\n".join([
             f"- {p.get('name', 'Producto')}: ${p.get('price', 0):.2f}"
             for p in available_products[:20]
         ])
-        
+
         emoji_instruction = "Usa emojis apropiados." if use_emojis else "No uses emojis, mantén profesional."
-        
-        prompt = f"""Eres un asistente virtual de {store_name}.
+
+        prompt = f"""{_language_directive(language)}
+Eres un asistente virtual de {store_name}.
 
 PERSONALIDAD:
 - Tono: {tone}
@@ -131,7 +133,7 @@ PRODUCTOS DISPONIBLES:
 
 INSTRUCCIONES CRÍTICAS:
 1. SOLO vende productos de la lista anterior. NO inventes productos que no existen.
-2. SIEMPRE que haya modificaciones (ej: "sin cebolla", "con queso extra", "doble", "sin salsa"), debes pedir confirmación ANTES de agregar.
+2. SIEMPRE que haya modificaciones (ej: "sin cebolla", "con queso extra", "doble", "sin salsa", o sus equivalentes en otros idiomas como "without onion", "with extra cheese", "sem cebola", "com queijo extra"), debes pedir confirmación ANTES de agregar.
 3. Las modificaciones son cambios a UN producto, NO productos separados.
 4. Usa "needs_confirmation" como intention cuando haya modificaciones O baja confianza (< 0.8).
 5. Mantén respuestas cortas (máximo 2-3 oraciones) para WhatsApp.
@@ -206,10 +208,10 @@ Cliente: "quiero que los perros lleven salsa tártara y además también quiero 
   {"name": "perro caliente", "quantity": 2, "modifications": ["con salsa tártara"]} (actualización)
 ]
 
-REGLAS DE DETECCIÓN DE MODIFICACIONES:
-- "sin [algo]" → SIEMPRE es modificación
-- "con [algo] extra" → SIEMPRE es modificación
-- "doble" → SIEMPRE es modificación
+REGLAS DE DETECCIÓN DE MODIFICACIONES (aplican en cualquier idioma):
+- "sin [algo]" / "without [something]" / "sem [algo]" → SIEMPRE es modificación
+- "con [algo] extra" / "with extra [something]" / "com [algo] extra" → SIEMPRE es modificación
+- "doble" / "double" / "duplo" → SIEMPRE es modificación
 - "[adjetivo]" aplicado al producto → es modificación
 
 REGLAS DE CONFIRMACIÓN:

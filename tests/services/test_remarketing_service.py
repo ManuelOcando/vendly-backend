@@ -375,7 +375,7 @@ class TestRemarketingService:
         assert "Hola" in message
         assert "10 días" in message
         assert "Pizza Margherita" in message
-        assert "SÍ" in message
+        assert "*sí*" in message
     
     def test_create_new_product_message(self, remarketing_service):
         """Test creating new product notification messages"""

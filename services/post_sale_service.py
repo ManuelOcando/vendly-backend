@@ -13,19 +13,22 @@ import logging
 
 from db.supabase import get_supabase_client
 from services.whatsapp.meta_service import MetaWhatsAppService
+from services.i18n import DEFAULT_LANGUAGE, t
 
 logger = logging.getLogger(__name__)
 
 
-ORDER_STATUS_MESSAGES = {
-    "payment_pending": "Estamos esperando la confirmación de tu pago.",
-    "pending_payment": "Estamos esperando la confirmación de tu pago.",
-    "payment_submitted": "Recibimos tu comprobante de pago, lo estamos verificando.",
-    "payment_confirmed": "Tu pago fue confirmado, estamos preparando tu pedido.",
-    "processing": "Tu pedido está en preparación.",
-    "ready": "¡Tu pedido está listo!",
-    "delivered": "Tu pedido ya fue entregado.",
-    "cancelled": "Este pedido fue cancelado.",
+# Order status -> catalog key. The messages themselves live in
+# services/i18n.py so they can be shown in the customer's language.
+ORDER_STATUS_KEYS = {
+    "payment_pending": "order_status.payment_pending",
+    "pending_payment": "order_status.payment_pending",
+    "payment_submitted": "order_status.payment_submitted",
+    "payment_confirmed": "order_status.payment_confirmed",
+    "processing": "order_status.processing",
+    "ready": "order_status.ready",
+    "delivered": "order_status.delivered",
+    "cancelled": "order_status.cancelled",
 }
 
 
@@ -50,13 +53,22 @@ class PostSaleService:
             logger.error(f"Error getting recent orders for {customer_phone}: {e}")
             return []
 
-    def format_order_status_message(self, order: Dict[str, Any]) -> str:
-        """Human-readable Spanish status message for an order"""
+    def format_order_status_message(
+        self, order: Dict[str, Any], language: str = DEFAULT_LANGUAGE
+    ) -> str:
+        """Human-readable status message for an order, in the customer's language"""
         status = order.get("status", "")
-        status_text = ORDER_STATUS_MESSAGES.get(status, f"Estado: {status}")
+        status_key = ORDER_STATUS_KEYS.get(status)
+        status_text = (
+            t(status_key, language) if status_key
+            else t("order_status.unknown", language, status=status)
+        )
         order_ref = str(order.get("id", ""))[-8:]
         total = order.get("total", 0)
-        return f"Pedido #{order_ref} - ${total:.2f}\n{status_text}"
+        return t(
+            "post_sale.order_line", language,
+            order_ref=order_ref, total=f"{total:.2f}", status=status_text,
+        )
 
     async def create_request(
         self,
@@ -153,21 +165,27 @@ class PostSaleService:
                 return
 
             config = config_result.data[0]
+
+            # Read the session first: it carries the language this customer
+            # has been conversing in, so the push goes out in that language.
+            session_result = self.db.table("conversation_sessions").select(
+                "id, session_data"
+            ).eq("tenant_id", tenant_id).eq("customer_phone", customer_phone).execute()
+
+            session_data = {}
+            if session_result.data:
+                session_data = session_result.data[0].get("session_data") or {}
+
             MetaWhatsAppService(
                 phone_number_id=config["phone_number_id"],
                 access_token=config["access_token"],
             ).send_message(
                 customer_phone,
-                "Tu solicitud fue resuelta. ¿Cómo calificarías la atención? Responde del 1 al 5.",
+                t("post_sale.rate_prompt", session_data.get("language", DEFAULT_LANGUAGE)),
             )
-
-            session_result = self.db.table("conversation_sessions").select(
-                "id, session_data"
-            ).eq("tenant_id", tenant_id).eq("customer_phone", customer_phone).execute()
 
             if session_result.data:
                 session = session_result.data[0]
-                session_data = session.get("session_data") or {}
                 session_data["awaiting_satisfaction_for"] = request["id"]
                 self.db.table("conversation_sessions").update({
                     "session_data": session_data

@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Dict, Any, List, Optional
 import google.generativeai as genai
-from .base import LLMProvider
+from .base import LLMProvider, language_directive as _language_directive
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +207,8 @@ class GeminiProvider(LLMProvider):
         self,
         store_name: str,
         personality: Dict[str, Any],
-        available_products: List[Dict[str, Any]]
+        available_products: List[Dict[str, Any]],
+        language: str = "es"
     ) -> str:
         """
         Build system prompt with store context and personality
@@ -215,16 +216,17 @@ class GeminiProvider(LLMProvider):
         tone = personality.get("tone", "casual")
         use_emojis = personality.get("use_emojis", True)
         greeting_style = personality.get("greeting_style", "¡Hola! 👋 Bienvenido a {store_name}")
-        
+
         # Format products list (limit to top 30 for brevity)
         products_text = "\n".join([
             f"- {p.get('name', 'Producto')}: ${p.get('price', 0):.2f}"
             for p in available_products[:30]
         ])
-        
+
         emoji_instruction = "Usa emojis apropiados." if use_emojis else "No uses emojis."
-        
-        prompt = f"""Eres un asistente de ventas para {store_name}.
+
+        prompt = f"""{_language_directive(language)}
+Eres un asistente de ventas para {store_name}.
 
 PERSONALIDAD:
 - Tono: {tone}
@@ -238,7 +240,8 @@ PRODUCTOS DISPONIBLES:
 REGLAS CRÍTICAS:
 1. SOLO vende productos de la lista
 2. CUALQUIER modificación → SIEMPRE usar "needs_confirmation"
-3. Modificaciones incluyen: "sin X", "con X extra", "doble", "también sin X", etc.
+3. Modificaciones incluyen: "sin X", "con X extra", "doble", "también sin X", y sus
+   equivalentes en otros idiomas ("without X", "with extra X", "sem X", "com X extra")
 4. Si confidence < 0.8 → usar "needs_confirmation"
 5. En mensajes combinados (múltiples mensajes juntos): Si el usuario dice "la hamburguesa también sin X" después de pedirla, es una modificación al mismo pedido, NO un pedido nuevo
 6. "También" = agregar modificación al producto mencionado anteriormente

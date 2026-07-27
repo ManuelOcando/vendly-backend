@@ -7,15 +7,9 @@ import logging
 
 from .base import BaseWhatsAppHandler
 from services.post_sale_service import PostSaleService
+from services.i18n import DEFAULT_LANGUAGE, matches_intent, t
 
 logger = logging.getLogger(__name__)
-
-ORDER_STATUS_KEYWORDS = [
-    "estado de mi pedido", "dónde está mi pedido", "donde esta mi pedido",
-    "seguimiento de mi pedido", "rastrear mi pedido",
-]
-RETURN_KEYWORDS = ["devolver", "devolución", "devolucion", "reembolso"]
-CHANGE_KEYWORDS = ["cambiar mi pedido", "cambio de producto"]
 
 
 class PostSaleHandler(BaseWhatsAppHandler):
@@ -34,8 +28,10 @@ class PostSaleHandler(BaseWhatsAppHandler):
         if session.get("current_state") in ("viewing_cart", "payment_pending"):
             return False
 
-        keywords = ORDER_STATUS_KEYWORDS + RETURN_KEYWORDS + CHANGE_KEYWORDS
-        return any(keyword in message for keyword in keywords)
+        return any(
+            matches_intent(message, intent)
+            for intent in ("order_status", "return", "change")
+        )
 
     async def handle(self, message_data: Dict[str, Any]) -> Optional[str]:
         tenant_id = message_data.get("tenant_id")
@@ -44,6 +40,7 @@ class PostSaleHandler(BaseWhatsAppHandler):
         message_lower = message.lower()
         session = message_data.get("session", {})
         session_data = session.get("session_data") or {}
+        language = message_data.get("language", DEFAULT_LANGUAGE)
 
         service = PostSaleService(db=self.db)
 
@@ -51,44 +48,52 @@ class PostSaleHandler(BaseWhatsAppHandler):
             awaiting_request_id = session_data.get("awaiting_satisfaction_for")
             if awaiting_request_id and message.isdigit():
                 return await self._capture_satisfaction_rating(
-                    service, session, session_data, awaiting_request_id, int(message)
+                    service, session, session_data, awaiting_request_id, int(message), language
                 )
 
-            if any(keyword in message_lower for keyword in ORDER_STATUS_KEYWORDS):
-                return await self._handle_status_inquiry(service, tenant_id, phone)
+            if matches_intent(message_lower, "order_status"):
+                return await self._handle_status_inquiry(service, tenant_id, phone, language)
 
-            if any(keyword in message_lower for keyword in RETURN_KEYWORDS + CHANGE_KEYWORDS):
-                request_type = "return" if any(k in message_lower for k in RETURN_KEYWORDS) else "change"
-                return await self._handle_change_or_return(service, tenant_id, phone, message, request_type)
+            if matches_intent(message_lower, "return") or matches_intent(message_lower, "change"):
+                request_type = "return" if matches_intent(message_lower, "return") else "change"
+                return await self._handle_change_or_return(
+                    service, tenant_id, phone, message, request_type, language
+                )
 
             return None
         except Exception as e:
             logger.error(f"Error in PostSaleHandler: {e}")
-            return "Ocurrió un error al procesar tu solicitud. Por favor intenta nuevamente."
+            return t("post_sale.error", language)
 
-    async def _handle_status_inquiry(self, service: PostSaleService, tenant_id: str, phone: str) -> str:
+    async def _handle_status_inquiry(
+        self, service: PostSaleService, tenant_id: str, phone: str,
+        language: str = DEFAULT_LANGUAGE
+    ) -> str:
         orders = await service.get_recent_orders(tenant_id, phone, limit=3)
         if not orders:
-            return "No encontré pedidos recientes asociados a tu número."
-        return "\n\n".join(service.format_order_status_message(order) for order in orders)
+            return t("post_sale.no_orders", language)
+        return "\n\n".join(
+            service.format_order_status_message(order, language) for order in orders
+        )
 
     async def _handle_change_or_return(
-        self, service: PostSaleService, tenant_id: str, phone: str, message: str, request_type: str
+        self, service: PostSaleService, tenant_id: str, phone: str, message: str,
+        request_type: str, language: str = DEFAULT_LANGUAGE
     ) -> str:
         orders = await service.get_recent_orders(tenant_id, phone, limit=1)
         order_id = orders[0]["id"] if orders else None
 
         request = await service.create_request(tenant_id, phone, order_id, request_type, message)
         if request:
-            return "Recibimos tu solicitud. El vendedor se pondrá en contacto contigo pronto. 📋"
-        return "No pudimos procesar tu solicitud. Por favor intenta nuevamente."
+            return t("post_sale.request_received", language)
+        return t("post_sale.request_failed", language)
 
     async def _capture_satisfaction_rating(
         self, service: PostSaleService, session: Dict[str, Any], session_data: Dict[str, Any],
-        request_id: str, rating: int,
+        request_id: str, rating: int, language: str = DEFAULT_LANGUAGE,
     ) -> str:
         if not 1 <= rating <= 5:
-            return "Por favor responde con un número del 1 al 5."
+            return t("post_sale.rating_range", language)
 
         await service.rate_satisfaction(request_id, rating)
 
@@ -100,4 +105,4 @@ class PostSaleHandler(BaseWhatsAppHandler):
                 session_id, session.get("current_state", "initial"), session_data
             )
 
-        return "¡Gracias por tu calificación! 🙌"
+        return t("post_sale.rating_thanks", language)

@@ -15,6 +15,7 @@ from services.recommendation_engine import RecommendationEngine
 from services.recommendation_tracker import RecommendationTracker
 from models.recommendation import RecommendationRequest
 from api.deps import tenant_has_feature
+from services.i18n import DEFAULT_LANGUAGE, matches_intent, matches_word_intent, t
 
 logger = logging.getLogger(__name__)
 
@@ -26,26 +27,23 @@ class WelcomeHandler(BaseWhatsAppHandler):
         message = message_data.get("message", "").lower().strip()
         state = message_data.get("session", {}).get("current_state", "initial")
         
-        return state == "initial" and any(
-            greeting in message 
-            for greeting in ["hola", "hi", "hello", "buenos días", "buenas tardes", "buenas noches"]
-        )
+        return state == "initial" and matches_intent(message, "greeting")
     
     async def handle(self, message_data: Dict[str, Any]) -> Optional[str]:
         """Handle greeting message"""
         tenant_name = message_data.get("tenant_name", "Tienda")
         config = message_data.get("config", {})
-        
-        welcome_msg = config.get("welcome_message", "¡Hola! Soy el asistente de {store_name}. ¿En qué puedo ayudarte?")
-        message = welcome_msg.format(store_name=tenant_name)
-        
-        # Add quick options
-        message += """
+        language = message_data.get("language", DEFAULT_LANGUAGE)
 
-🛒 *Opciones:*
-• Escribe "menu" para ver nuestros productos
-• Escribe "pedido:TU_CARRO_ID" si vienes de la web
-• Escribe "hola" para empezar"""
+        # A seller-authored welcome_message is used as-is (it's their own
+        # wording); only the built-in default gets translated.
+        welcome_msg = config.get("welcome_message")
+        if welcome_msg:
+            message = welcome_msg.format(store_name=tenant_name)
+        else:
+            message = t("welcome.default", language, store_name=tenant_name)
+
+        message += t("welcome.options", language)
         
         # Update session state
         session_id = message_data.get("session", {}).get("id")
@@ -60,45 +58,32 @@ class MenuHandler(BaseWhatsAppHandler):
     async def can_handle(self, message_data: Dict[str, Any]) -> bool:
         """Check if message is requesting menu"""
         message = message_data.get("message", "").lower().strip()
-        
-        # Normalizar acentos para comparación
-        message_normalized = message.replace("ú", "u").replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o")
-        
-        keywords = ["menu", "catalogo", "ver productos", "productos", "catalogo"]
-        keywords_with_accents = ["menú", "catálogo"]
-        
-        return any(keyword in message_normalized for keyword in keywords) or \
-               any(keyword in message for keyword in keywords_with_accents)
+        return matches_intent(message, "menu")
     
     async def handle(self, message_data: Dict[str, Any]) -> Optional[str]:
         """Handle menu request"""
         tenant_id = message_data.get("tenant_id")
-        
+        language = message_data.get("language", DEFAULT_LANGUAGE)
+
         try:
             # Get all active products (not just featured)
             items_result = self.db.table("items").select(
                 "name, price, description"
             ).eq("tenant_id", tenant_id).eq("is_active", True).limit(10).execute()
-            
+
             if not items_result.data:
-                return "No hay productos disponibles en este momento."
+                return t("menu.empty", language)
             
             items_text = "\n\n".join([
                 f"🍔 {item['name']}\n💲 ${item['price']:.2f}\n{item.get('description', '')}"
                 for item in items_result.data
             ])
             
-            message = f"""📋 *Nuestros Productos:*
+            return t("menu.header", language, items=items_text)
 
-{items_text}
-
-🛍️ Para ordenar, visita nuestra tienda o escríbeme lo que deseas."""
-            
-            return message
-            
         except Exception as e:
             logger.error(f"Error getting menu: {e}")
-            return "Lo siento, no puedo mostrar el menú en este momento. Intenta más tarde."
+            return t("menu.error", language)
 
 class ProductOrderHandler(BaseWhatsAppHandler):
     """Handles ordering products by name - supports multiple products in one message"""
@@ -109,20 +94,23 @@ class ProductOrderHandler(BaseWhatsAppHandler):
     async def can_handle(self, message_data: Dict[str, Any]) -> bool:
         """Check if message could be a product name (not a command)"""
         message = message_data.get("message", "").lower().strip()
-        
-        # Normalizar para comparar comandos
-        message_normalized = message.replace("ú", "u").replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o")
-        
-        # Skip if it's a known command
-        commands = ["hola", "hi", "hello", "menu", "catalogo", "catálogo",
-                   "ver productos", "productos", "pedido:", "si", "sí", 
-                   "confirmar", "confirmo", "acepto", "no", "cancelar", "ver carrito", "carrito"]
-        
+
         # Must be at least 2 characters and not a command
         if len(message) < 2:
             return False
-            
-        return not any(cmd in message_normalized for cmd in commands)
+
+        if message.startswith("pedido:") or "carrito" in message or "cart" in message:
+            return False
+
+        # Greeting/menu keywords are long enough to match as substrings;
+        # confirm/reject are short words ("no", "si", "ok") that must match
+        # as whole words or they fire inside product names like "normal".
+        if matches_intent(message, "greeting") or matches_intent(message, "menu"):
+            return False
+        if matches_word_intent(message, "confirm") or matches_word_intent(message, "reject"):
+            return False
+
+        return True
     
     def _normalize_text(self, text: str) -> str:
         """Remove accents for better matching"""
@@ -139,7 +127,9 @@ class ProductOrderHandler(BaseWhatsAppHandler):
         products = [p.strip() for p in temp.split("||") if p.strip()]
         return products
     
-    async def _find_product(self, tenant_id: str, search_term: str) -> tuple:
+    async def _find_product(
+        self, tenant_id: str, search_term: str, language: str = DEFAULT_LANGUAGE
+    ) -> tuple:
         """Find product by search term. Returns (product, error_message)"""
         search_normalized = self._normalize_text(search_term)
         
@@ -149,7 +139,7 @@ class ProductOrderHandler(BaseWhatsAppHandler):
         ).eq("tenant_id", tenant_id).eq("is_active", True).execute()
         
         if not items_result.data:
-            return None, f"No hay productos disponibles"
+            return None, t("product.none_available", language)
         
         # Buscar coincidencia exacta primero (sin acentos)
         for item in items_result.data:
@@ -165,13 +155,13 @@ class ProductOrderHandler(BaseWhatsAppHandler):
                 matches.append(item)
         
         if len(matches) == 0:
-            return None, f"No encontré \"{search_term}\""
+            return None, t("product.not_found", language, name=search_term)
         elif len(matches) == 1:
             return matches[0], None
         else:
             # Multiple matches - return list for user to choose
             product_list = "\n".join([f"• {m['name']} - ${m['price']:.2f}" for m in matches[:5]])
-            return None, f"¿Cuál de estos?\n{product_list}"
+            return None, t("product.which_one", language, options=product_list)
     
     async def handle(self, message_data: Dict[str, Any]) -> Optional[str]:
         """Handle product order by name - supports multiple products"""
@@ -179,7 +169,8 @@ class ProductOrderHandler(BaseWhatsAppHandler):
         phone = message_data.get("phone")
         raw_message = message_data.get("message", "").strip()
         session = message_data.get("session", {})
-        
+        language = message_data.get("language", DEFAULT_LANGUAGE)
+
         try:
             # Split message into multiple products
             product_names = self._split_products(raw_message)
@@ -198,7 +189,7 @@ class ProductOrderHandler(BaseWhatsAppHandler):
             
             # Process each product
             for product_name in product_names:
-                product, error = await self._find_product(tenant_id, product_name)
+                product, error = await self._find_product(tenant_id, product_name, language)
                 
                 if product:
                     # Check if already in cart (increment quantity)
@@ -220,7 +211,7 @@ class ProductOrderHandler(BaseWhatsAppHandler):
             
             # If nothing was added and there are errors
             if not added_products and errors:
-                return f"❌ No pude agregar:\n" + "\n".join(errors) + "\n\n🛒 Escribe \"menu\" para ver los productos"
+                return t("product.could_not_add", language, errors="\n".join(errors))
             
             # Calculate total
             total = sum(item["price"] * item["quantity"] for item in cart)
@@ -244,30 +235,23 @@ class ProductOrderHandler(BaseWhatsAppHandler):
             
             error_text = ""
             if errors:
-                error_text = f"\n\n⚠️ No encontré:\n" + "\n".join(errors)
+                error_text = "\n\n" + t("cart.not_found_header", language) + "\n" + "\n".join(errors)
             
-            message = f"""{added_text}
-
-🛒 *Tu carrito:*
-{cart_text}
-
-💰 *Total:* ${total:.2f}{error_text}
-
-¿Deseas agregar otro producto o confirmar el pedido?"""
-            
-            return message
+            return t(
+                "cart.summary", language,
+                added=added_text, items=cart_text,
+                total=f"{total:.2f}", errors=error_text,
+            )
             
         except Exception as e:
             logger.error(f"Error processing product order: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            return "Lo siento, no pude procesar tu pedido. Intenta escribir \"menu\" para ver los productos."
+            return t("product.order_error", language)
 
 class ConfirmationHandler(BaseWhatsAppHandler):
     """Handles confirmation responses (yes/no) when there's a pending product"""
     
-    CONFIRM_KEYWORDS = ["si", "sí", "yes", "confirmar", "confirmo", "acepto", "dale", "ok", "okay"]
-    REJECT_KEYWORDS = ["no", "cancelar", "nope", "rechazar", "denegar"]
     
     async def can_handle(self, message_data: Dict[str, Any]) -> bool:
         """Check if message is a confirmation response and there's a pending product"""
@@ -287,14 +271,19 @@ class ConfirmationHandler(BaseWhatsAppHandler):
         if not (is_awaiting and has_pending):
             return False
         
-        # Check if message is a confirmation response
-        return any(keyword in message for keyword in self.CONFIRM_KEYWORDS + self.REJECT_KEYWORDS)
+        # Check if message is a confirmation response. Whole-word matching:
+        # a bare substring "no" fires inside product names like "normal".
+        return (
+            matches_word_intent(message, "confirm")
+            or matches_word_intent(message, "reject")
+        )
     
     async def handle(self, message_data: Dict[str, Any]) -> Optional[str]:
         """Handle confirmation or rejection of pending product(s)"""
         message = message_data.get("message", "").lower().strip()
         session = message_data.get("session", {})
-        
+        language = message_data.get("language", DEFAULT_LANGUAGE)
+
         session_data = session.get("session_data", {}) or {}
         current_cart = session_data.get("cart", [])
         
@@ -306,15 +295,15 @@ class ConfirmationHandler(BaseWhatsAppHandler):
             if single_product:
                 pending_products = [single_product]
             else:
-                return "No hay ningún producto pendiente de confirmación."
+                return t("confirmation.no_pending", language)
         
         # Ensure it's a list
         if not isinstance(pending_products, list):
             pending_products = [pending_products]
         
         # Check if confirmed or rejected
-        is_confirmed = any(keyword in message for keyword in self.CONFIRM_KEYWORDS)
-        is_rejected = any(keyword in message for keyword in self.REJECT_KEYWORDS)
+        is_confirmed = matches_word_intent(message, "confirm")
+        is_rejected = matches_word_intent(message, "reject")
         
         session_id = session.get("id")
         
@@ -368,14 +357,11 @@ class ConfirmationHandler(BaseWhatsAppHandler):
             
             added_text = "\n".join(added_products_text)
             
-            return f"""{added_text}
-
-🛒 *Tu carrito:*
-{cart_text}
-
-💰 *Total:* ${total:.2f}
-
-¿Deseas agregar otro producto o confirmar el pedido?"""
+            return t(
+                "cart.summary", language,
+                added=added_text, items=cart_text,
+                total=f"{total:.2f}", errors="",
+            )
         
         elif is_rejected:
             # Clear pending products (both formats)
@@ -386,11 +372,7 @@ class ConfirmationHandler(BaseWhatsAppHandler):
             if session_id:
                 await self.update_session_state(session_id, "ordering", session_data)
             
-            return """❌ Producto(s) descartado(s).
-
-¿Deseas intentar con otro producto? Escribe:
-• "menu" para ver la lista
-• El nombre de otro producto"""
+            return t("confirmation.discarded", language)
         
         return None  # Let next handler process
 
@@ -431,13 +413,15 @@ class CartHandler(BaseWhatsAppHandler):
         tenant_id = message_data.get("tenant_id")
         phone = message_data.get("phone", "")
         session = message_data.get("session", {})
+        language = message_data.get("language", DEFAULT_LANGUAGE)
+        tenant_name = message_data.get("tenant_name", "Vendly")
 
         try:
             # Get cart directly from Redis (not via API endpoint)
             cart = await _get_cart_from_redis(cart_id)
 
             if not cart:
-                return "El carrito ha expirado. Por favor, crea uno nuevo desde la tienda."
+                return t("cart.expired", language)
 
             # Update session with cart_id and transition to viewing_cart
             session_id = session.get("id")
@@ -450,27 +434,29 @@ class CartHandler(BaseWhatsAppHandler):
                 for item in cart["items"]
             ])
 
-            message = f"""¡Hola! Soy el asistente de Vendly.
+            message = t(
+                "cart.storefront_summary", language,
+                store_name=tenant_name, items=items_text,
+                total=f"{cart['total']:.2f}",
+            )
 
-Tu pedido:
-{items_text}
-
-Total: ${cart['total']:.2f}"""
-
-            recommendations_section = await self._build_recommendations_section(tenant_id, phone, cart)
+            recommendations_section = await self._build_recommendations_section(
+                tenant_id, phone, cart, language
+            )
             if recommendations_section:
                 message += f"\n\n{recommendations_section}"
 
-            message += "\n\n¿Deseas agregar algo más o confirmar el pedido?"
+            message += t("cart.add_more_or_confirm", language)
 
             return message
 
         except Exception as e:
             logger.error(f"Error processing cart: {e}")
-            return "No puedo encontrar tu carrito. Por favor, intenta nuevamente."
+            return t("cart.lookup_error", language)
 
     async def _build_recommendations_section(
-        self, tenant_id: str, phone: str, cart: Dict[str, Any]
+        self, tenant_id: str, phone: str, cart: Dict[str, Any],
+        language: str = DEFAULT_LANGUAGE
     ) -> Optional[str]:
         """Build a short "you might also like" section based on what's
         already in the cart. Premium-only (advanced_recommendations); never
@@ -505,7 +491,7 @@ Total: ${cart['total']:.2f}"""
                 except Exception as tracking_err:
                     logger.warning(f"Could not track shown recommendation: {tracking_err}")
 
-            return "✨ También te puede interesar:\n" + "\n".join(lines)
+            return t("cart.recommendations_header", language) + "\n" + "\n".join(lines)
         except Exception as e:
             logger.warning(f"Could not build recommendations for tenant {tenant_id}: {e}")
             return None
@@ -519,25 +505,24 @@ class CartConfirmationHandler(BaseWhatsAppHandler):
         state = message_data.get("session", {}).get("current_state", "")
         message = message_data.get("message", "").lower().strip()
         
-        return state == "viewing_cart" and any(
-            word in message for word in ["sí", "si", "confirmo", "confirmar", "acepto"]
-        )
+        return state == "viewing_cart" and matches_word_intent(message, "confirm")
     
     async def handle(self, message_data: Dict[str, Any]) -> Optional[str]:
         """Handle cart confirmation"""
         tenant_id = message_data.get("tenant_id")
         phone = message_data.get("phone")
         session = message_data.get("session", {})
-        
+        language = message_data.get("language", DEFAULT_LANGUAGE)
+
         try:
             # Get cart from session
             cart_id = session.get("session_data", {}).get("cart_id")
             if not cart_id:
-                return "No encuentro tu carrito. Por favor, inicia nuevamente."
-            
+                return t("cart.not_found", language)
+
             cart = await _get_cart_from_redis(cart_id)
             if not cart:
-                return "Tu carrito ha expirado. Por favor, crea uno nuevo."
+                return t("cart.expired_simple", language)
             
             # Create order in database
             order_data = {
@@ -553,7 +538,7 @@ class CartConfirmationHandler(BaseWhatsAppHandler):
             order = order_result.data[0] if order_result.data else None
 
             if not order:
-                return "Error al procesar tu pedido. Por favor, intenta nuevamente."
+                return t("order.process_error", language)
 
             # Record purchase history so future recommendations can be
             # personalized for this customer. Never blocks order confirmation.
@@ -610,7 +595,7 @@ class CartConfirmationHandler(BaseWhatsAppHandler):
                 logger.warning(f"Could not notify seller for tenant {tenant_id}: {notify_err}")
 
             # Send payment instructions
-            payment_instructions = "Por favor, contacta al vendedor para recibir las instrucciones de pago."
+            payment_instructions = t("order.payment_default", language)
             try:
                 bot_config_result = self.db.table("bot_configurations").select(
                     "payment_instructions"
@@ -621,13 +606,12 @@ class CartConfirmationHandler(BaseWhatsAppHandler):
             except Exception as config_err:
                 logger.warning(f"Could not fetch bot_configurations for tenant {tenant_id}: {config_err}")
             
-            payment_message = f"""¡Pedido confirmado! 🎉
-
-Orden #{order['id'][-8:]}
-
-Total: ${cart['total']:.2f}
-
-{payment_instructions}"""
+            payment_message = t(
+                "order.confirmed", language,
+                order_ref=order["id"][-8:],
+                total=f"{cart['total']:.2f}",
+                payment_instructions=payment_instructions,
+            )
             
             # Update session state
             session_id = session.get("id")
@@ -642,4 +626,4 @@ Total: ${cart['total']:.2f}
             
         except Exception as e:
             logger.error(f"Error confirming order: {e}")
-            return "Error al procesar tu pedido. Por favor, intenta nuevamente."
+            return t("order.process_error", language)

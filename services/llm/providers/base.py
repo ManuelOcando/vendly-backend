@@ -5,6 +5,29 @@ All LLM providers must implement this interface
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
 
+from services.i18n import LANGUAGE_NAMES, normalize_language
+
+
+def language_directive(language: str) -> str:
+    """Instruction block forcing the reply language (requirement 15.1).
+
+    The few-shot examples in the prompts below stay in Spanish on purpose:
+    they teach the JSON schema and the order-extraction reasoning, not the
+    output language. This directive goes first so it outranks them, and
+    `response_text`/`confirmation_message` come back in the customer's
+    language while the structured fields stay machine-readable.
+    """
+    lang = normalize_language(language)
+    language_name = LANGUAGE_NAMES.get(lang, LANGUAGE_NAMES["es"])
+    return (
+        f"IDIOMA OBLIGATORIO: responde SIEMPRE en {language_name} (código '{lang}').\n"
+        f"Los campos de texto que ve el cliente ('response_text', "
+        f"'confirmation_message', 'questions') DEBEN estar en {language_name}, "
+        f"aunque los ejemplos de abajo estén en español.\n"
+        f"Los nombres de productos se mantienen EXACTAMENTE como aparecen en la "
+        f"lista de productos, sin traducir.\n"
+    )
+
 
 class LLMProvider(ABC):
     """Abstract base class for LLM providers"""
@@ -45,15 +68,18 @@ class LLMProvider(ABC):
         self,
         store_name: str,
         personality: Dict[str, Any],
-        available_products: List[Dict[str, Any]]
+        available_products: List[Dict[str, Any]],
+        language: str = "es"
     ) -> str:
         """
         Build system prompt with store context and personality
-        
+
         Args:
             store_name: Name of the store
             personality: Dict with 'tone', 'use_emojis', 'greeting_style'
             available_products: List of available products
+            language: Language code the assistant must reply in (es/en/pt).
+                Keyword with a default so existing call sites keep working.
         """
         pass
     

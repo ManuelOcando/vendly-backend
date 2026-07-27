@@ -14,6 +14,7 @@ import logging
 
 from db.supabase import get_supabase_client
 from services.whatsapp.meta_service import MetaWhatsAppService
+from services.i18n import DEFAULT_LANGUAGE, t
 
 logger = logging.getLogger(__name__)
 
@@ -212,15 +213,18 @@ class OfflineModeService:
             return True
         return open_t <= current < close_t
 
-    async def get_offline_reply(self, tenant_id: str) -> str:
+    async def get_offline_reply(self, tenant_id: str, language: str = DEFAULT_LANGUAGE) -> str:
+        """The out-of-hours notice shown to a customer.
+
+        A seller-authored `out_of_hours_message` wins and is sent verbatim -
+        it's their own wording, in their own language. Only the built-in
+        default is translated.
+        """
         config = await self._get_bot_config(tenant_id)
         message = config.get("out_of_hours_message")
         if message:
             return message
-        return (
-            "🕐 En este momento estamos fuera de nuestro horario de atención. "
-            "Dejanos tu mensaje y te responderemos apenas estemos disponibles 😊"
-        )
+        return t("offline.default_reply", language)
 
     # ------------------------------------------------------------------
     # Offline messages left by customers

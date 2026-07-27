@@ -292,7 +292,7 @@ class TestServiceSchedulingHandlerFlow:
 
         with patch("services.whatsapp.handlers.scheduling.SchedulingService") as mock_service_cls:
             mock_service_cls.return_value.cancel_appointment = AsyncMock(
-                return_value={"success": True, "message": "Tu cita fue cancelada."}
+                return_value={"success": True, "message_key": "scheduling.cancel_success"}
             )
             response = await handler.handle(make_message_data("cancelar mi cita"))
 

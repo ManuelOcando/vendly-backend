@@ -15,6 +15,8 @@ from services.whatsapp.handlers import (
 )
 from services.conversational_dashboard import ConversationalDashboard
 from services.offline_mode_service import OfflineModeService
+from services.i18n import DEFAULT_LANGUAGE, detect_language, normalize_language, t
+from api.deps import tenant_has_feature
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,7 @@ class MetaWhatsAppBotService:
     
     async def process_message(self, tenant_id: str, phone: str, message: str, phone_number_id: str) -> Optional[str]:
         """Process incoming message and return response"""
+        language = DEFAULT_LANGUAGE
         try:
             logger.info(f"Processing message from {phone} for tenant {tenant_id}: {message[:50]}...")
             
@@ -85,13 +88,15 @@ class MetaWhatsAppBotService:
 
             is_onboarding = tenant.get("onboarding_status") in (None, "not_started", "in_progress")
 
+            language = await self._resolve_language(tenant_id, phone, message, session, is_seller)
+
             if is_seller:
                 # Reset the inactivity clock and flush any offline messages
                 # left by customers while the seller was away (non-blocking).
                 await self.offline_service.record_seller_activity(tenant_id)
                 asyncio.create_task(self.offline_service.notify_seller_of_pending_messages(tenant_id))
             elif not is_onboarding and await self.offline_service.is_offline(tenant_id):
-                offline_reply = await self.offline_service.get_offline_reply(tenant_id)
+                offline_reply = await self.offline_service.get_offline_reply(tenant_id, language)
                 await self.offline_service.store_offline_message(tenant_id, phone, message)
                 await self._log_message(
                     tenant_id=tenant_id,
@@ -111,7 +116,8 @@ class MetaWhatsAppBotService:
                 "phone_number_id": phone_number_id,
                 "config": config,
                 "session": session,
-                "is_seller": is_seller
+                "is_seller": is_seller,
+                "language": language
             }
             
             # Process through appropriate chain (LLM-first architecture)
@@ -132,7 +138,12 @@ class MetaWhatsAppBotService:
             # If still no response, send default response
             if not response:
                 response = await self._default_response(message_data)
-            
+
+            if not is_seller:
+                response = await self._append_translation_notice(
+                    tenant_id, session, response, language
+                )
+
             # Log outbound message
             await self._log_message(
                 tenant_id=tenant_id,
@@ -152,8 +163,126 @@ class MetaWhatsAppBotService:
             
         except Exception as e:
             logger.error(f"Error processing message: {e}")
-            return "Lo siento, tuve un problema procesando tu mensaje. Intenta nuevamente."
-    
+            return t("bot.generic_error", language)
+
+    async def _resolve_language(
+        self,
+        tenant_id: str,
+        phone: str,
+        message: str,
+        session: Dict[str, Any],
+        is_seller: bool,
+    ) -> str:
+        """Decide which language to answer this message in.
+
+        Sellers always get Spanish (the dashboard/config surface is
+        Spanish-only). Tenants without the `multi_language` plan feature
+        degrade silently to Spanish - no upsell nag is shown to a customer,
+        mirroring how CartHandler treats advanced_recommendations.
+
+        Otherwise the conversation carries a sticky language, and only a
+        confident detection on the new message switches it (requirement
+        15.4). A short ambiguous reply like "ok" detects as None and keeps
+        the conversation where it was instead of snapping back to Spanish.
+        """
+        if is_seller:
+            return DEFAULT_LANGUAGE
+
+        try:
+            if not await tenant_has_feature(tenant_id, "multi_language"):
+                return DEFAULT_LANGUAGE
+
+            session_data = session.get("session_data") or {}
+            stored = session_data.get("language")
+            detected = detect_language(message)
+
+            if detected:
+                language = detected
+            elif stored:
+                language = normalize_language(stored)
+            else:
+                language = await self._get_tenant_default_language(tenant_id)
+
+            if language != stored:
+                await self._persist_session_language(session.get("id"), language)
+
+            return language
+        except Exception as e:
+            logger.warning(f"Could not resolve language for tenant {tenant_id}: {e}")
+            return DEFAULT_LANGUAGE
+
+    async def _get_tenant_default_language(self, tenant_id: str) -> str:
+        """The language the seller authored their content in."""
+        try:
+            result = self.db.table("bot_configurations").select(
+                "default_language"
+            ).eq("tenant_id", tenant_id).limit(1).execute()
+            if result.data:
+                return normalize_language(result.data[0].get("default_language"))
+        except Exception as e:
+            logger.warning(f"Could not read default_language for tenant {tenant_id}: {e}")
+        return DEFAULT_LANGUAGE
+
+    async def _persist_session_language(self, session_id: Optional[str], language: str) -> None:
+        """Store the conversation's language, preserving the rest of session_data."""
+        if not session_id:
+            return
+        try:
+            result = self.db.table("conversation_sessions").select(
+                "session_data"
+            ).eq("id", session_id).limit(1).execute()
+            session_data = (result.data[0].get("session_data") or {}) if result.data else {}
+            session_data["language"] = language
+            self.db.table("conversation_sessions").update({
+                "session_data": session_data
+            }).eq("id", session_id).execute()
+        except Exception as e:
+            logger.warning(f"Could not persist language for session {session_id}: {e}")
+
+    async def _append_translation_notice(
+        self,
+        tenant_id: str,
+        session: Dict[str, Any],
+        response: Optional[str],
+        language: str,
+    ) -> Optional[str]:
+        """Tell the customer once that they're reading machine translation.
+
+        Requirement 15.3: product names and descriptions stay in whatever
+        language the seller typed them into the catalog, so when we answer
+        in a different language the customer is getting mixed content and
+        deserves to know why. Sent once per conversation, not per message.
+        """
+        if not response:
+            return response
+
+        try:
+            if language == await self._get_tenant_default_language(tenant_id):
+                return response
+
+            session_data = session.get("session_data") or {}
+            if session_data.get("translation_notice_sent"):
+                return response
+
+            session_id = session.get("id")
+            if session_id:
+                result = self.db.table("conversation_sessions").select(
+                    "session_data"
+                ).eq("id", session_id).limit(1).execute()
+                stored = (result.data[0].get("session_data") or {}) if result.data else {}
+                if stored.get("translation_notice_sent"):
+                    return response
+                stored["translation_notice_sent"] = True
+                self.db.table("conversation_sessions").update({
+                    "session_data": stored
+                }).eq("id", session_id).execute()
+
+            return response + t("translation.notice", language)
+        except Exception as e:
+            logger.warning(f"Could not append translation notice for tenant {tenant_id}: {e}")
+            return response
+
+
     async def _get_tenant(self, tenant_id: str) -> Optional[Dict[str, Any]]:
         """Get tenant information"""
         try:
@@ -273,23 +402,13 @@ class MetaWhatsAppBotService:
 
     async def _default_response(self, message_data: Dict[str, Any]) -> str:
         """Default response when no handler matches"""
-        tenant_name = message_data.get("tenant_name", "Tienda")
+        language = message_data.get("language", DEFAULT_LANGUAGE)
         state = message_data.get("session", {}).get("current_state", "initial")
-        
+
         if state == "viewing_cart":
-            return """¿Deseas agregar algo más o confirmar el pedido?
-• Responde "sí" para confirmar
-• Responde "agregar" para añadir productos
-• Responde "cancelar" para cancelar"""
-        
-        return f"""Gracias por tu mensaje. Soy el asistente de {tenant_name}.
+            return t("bot.viewing_cart_default", language)
 
-🛒 *Opciones disponibles:*
-• Escribe "hola" para empezar
-• Escribe "menu" para ver productos
-• Escribe "pedido:TU_CARRO_ID" si vienes de la web
-
-¿En qué puedo ayudarte?"""
+        return t("bot.default_menu", language)
     
     async def _check_alerts_background(self, tenant_id: str):
         """Check for smart alerts in background (non-blocking)"""

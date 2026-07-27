@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from db.supabase import get_supabase_client
+from services.i18n import DEFAULT_LANGUAGE, normalize_language, t
 from models.vendly_pro import (
     CustomerProfileResponse,
     PurchaseHistoryResponse,
@@ -176,12 +177,14 @@ class RemarketingService:
             # Generate personalized offer
             offer_code = self._generate_offer_code(reminder_type, loyalty)
             
-            # Create reminder message
+            # Create reminder message in the customer's own language
+            language = await self._get_customer_language(tenant_id, customer_phone)
             message = self._create_inactivity_message(
                 customer=profile,
                 reminder_type=reminder_type,
                 offer_code=offer_code,
-                loyalty=loyalty
+                loyalty=loyalty,
+                language=language
             )
             
             # Send via WhatsApp
@@ -299,11 +302,12 @@ class RemarketingService:
             Result of sending the suggestion
         """
         try:
-            # Create suggestion message
+            # Create suggestion message in the customer's own language
             message = self._create_repeat_order_message(
                 customer_phone=customer_phone,
                 products=suggestion.products,
-                days_since=suggestion.days_since_last_order
+                days_since=suggestion.days_since_last_order,
+                language=await self._get_customer_language(tenant_id, customer_phone)
             )
             
             # Send via WhatsApp
@@ -405,11 +409,12 @@ class RemarketingService:
             Result of sending the notification
         """
         try:
-            # Create notification message
+            # Create notification message in the customer's own language
             message = self._create_new_product_message(
                 customer_phone=customer_phone,
                 product_name=notification.product_name,
-                reason=notification.reason
+                reason=notification.reason,
+                language=await self._get_customer_language(tenant_id, customer_phone)
             )
             
             # Send via WhatsApp
@@ -552,6 +557,25 @@ class RemarketingService:
             logger.error(f"Error getting customers with purchase history: {e}")
             return []
     
+    async def _get_customer_language(self, tenant_id: str, customer_phone: str) -> str:
+        """The language this customer last conversed in.
+
+        Remarketing messages are proactive - there is no inbound message to
+        detect a language from, so we reuse whatever the bot settled on
+        during their last conversation. Falls back to the default when the
+        session has expired (they run on a 24h TTL).
+        """
+        try:
+            result = self.db.table("conversation_sessions").select(
+                "session_data"
+            ).eq("tenant_id", tenant_id).eq("customer_phone", customer_phone).limit(1).execute()
+            if result.data:
+                session_data = result.data[0].get("session_data") or {}
+                return normalize_language(session_data.get("language"))
+        except Exception as e:
+            logger.warning(f"Could not read language for {customer_phone}: {e}")
+        return DEFAULT_LANGUAGE
+
     async def _get_customer_profile(
         self,
         tenant_id: str,
@@ -749,96 +773,72 @@ class RemarketingService:
         customer: CustomerProfileResponse,
         reminder_type: InactivityReminderType,
         offer_code: str,
-        loyalty: Optional[LoyaltyPointsResponse] = None
+        loyalty: Optional[LoyaltyPointsResponse] = None,
+        language: str = DEFAULT_LANGUAGE
     ) -> str:
         """Create personalized inactivity reminder message"""
         try:
-            # Get customer name from phone
-            customer_name = customer.phone_number
-            
-            # Message templates
-            templates = {
-                InactivityReminderType.FIRST_REMINDER: (
-                    f"Hola {customer_name}! 🌟\n\n"
-                    f"Hace 30 días que no nos visitas y extrañamos atenderte.\n\n"
-                    f"Como agradecimiento por tu fidelidad, te damos un *10% de descuento* en tu próxima compra.\n\n"
-                    f"Usa el código: *{offer_code}*\n\n"
-                    f"¿Qué tal si vuelves hoy? 🍽️"
-                ),
-                InactivityReminderType.SECOND_REMINDER: (
-                    f"Hola {customer_name}! 👋\n\n"
-                    f"Hace 45 días que no nos visitas y queremos saber ¿qué tal ha estado todo?\n\n"
-                    f"Te esperamos con un *15% de descuento* especial.\n\n"
-                    f"Usa el código: *{offer_code}*\n\n"
-                    f"¡Tu mesa/tableta está reservada! 🎁"
-                ),
-                InactivityReminderType.THIRD_REMINDER: (
-                    f"Hola {customer_name}! ❤️\n\n"
-                    f"Hace 60 días que no nos visitas y queremos recuperarte.\n\n"
-                    f"Te ofrecemos un *20% de descuento* + *envío gratis* en tu próxima compra.\n\n"
-                    f"Usa el código: *{offer_code}*\n\n"
-                    f"¡Esperamos verte pronto! 🚀"
-                ),
-                InactivityReminderType.VIP_REMINDER: (
-                    f"Hola {customer_name}! ⭐\n\n"
-                    f"Hace 21 días que no nos visitas y queremos brindarte atención especial.\n\n"
-                    f"Como cliente VIP, te ofrecemos un *25% de descuento* exclusivo.\n\n"
-                    f"Usa el código: *{offer_code}*\n\n"
-                    f"¡Tu mesa/tableta está reservada! 🌟"
-                )
+            # Days of inactivity and discount offered, per reminder tier.
+            # Kept as data so the copy itself lives in the message catalog and
+            # can be rendered in the customer's language.
+            tiers = {
+                InactivityReminderType.FIRST_REMINDER: (30, 10),
+                InactivityReminderType.SECOND_REMINDER: (45, 15),
+                InactivityReminderType.THIRD_REMINDER: (60, 20),
+                InactivityReminderType.VIP_REMINDER: (21, 25),
             }
-            
-            return templates.get(reminder_type, templates[InactivityReminderType.FIRST_REMINDER])
-            
+            days, discount = tiers.get(
+                reminder_type, tiers[InactivityReminderType.FIRST_REMINDER]
+            )
+
+            return t(
+                "remarketing.inactivity", language,
+                name=customer.phone_number, days=days,
+                discount=discount, code=offer_code,
+            )
+
         except Exception as e:
             logger.error(f"Error creating inactivity message: {e}")
-            return "Hola! Hace tiempo que no nos visitas y queremos recuperarte. ¡Te esperamos!"
+            return t("remarketing.inactivity_fallback", language)
     
     def _create_repeat_order_message(
         self,
         customer_phone: str,
         products: List[Dict[str, Any]],
-        days_since: int
+        days_since: int,
+        language: str = DEFAULT_LANGUAGE
     ) -> str:
         """Create repeat order suggestion message"""
         try:
             product_names = [p.get("name", "Producto") for p in products[:3]]
             product_list = "\n".join([f"• {name}" for name in product_names])
-            
-            message = (
-                f"¡Hola! 👋\n\n"
-                f"Hace {days_since} días hiciste un pedido que te gustó mucho.\n\n"
-                f"¿Quieres repetirlo?\n\n"
-                f"{product_list}\n\n"
-                f"Responde *SÍ* y te ayudo a repetir tu pedido anterior. 🛒"
+
+            return t(
+                "remarketing.repeat_order", language,
+                days=days_since, products=product_list,
             )
-            
-            return message
-            
+
         except Exception as e:
             logger.error(f"Error creating repeat order message: {e}")
-            return "¡Hola! ¿Quieres repetir tu pedido anterior?"
-    
+            return t("remarketing.repeat_order_fallback", language)
+
     def _create_new_product_message(
         self,
         customer_phone: str,
         product_name: str,
-        reason: str
+        reason: str,
+        language: str = DEFAULT_LANGUAGE
     ) -> str:
         """Create new product notification message"""
         try:
-            message = (
-                f"¡Nuevo producto disponible! 🎉\n\n"
-                f"Acabamos de lanzar *{product_name}*\n\n"
-                f"Basado en tus preferencias, creemos que te encantará. {reason}\n\n"
-                f"¿Quieres verlo? 🌟"
+            return t(
+                "remarketing.new_product", language,
+                product=product_name, reason=reason,
             )
-            
-            return message
-            
+
         except Exception as e:
             logger.error(f"Error creating new product message: {e}")
-            return "¡Tenemos un nuevo producto que creemos te encantará!"
+            return t("remarketing.new_product_fallback", language)
     
     def _find_frequent_orders(
         self,

@@ -9,34 +9,33 @@ from datetime import datetime
 
 from .base import BaseWhatsAppHandler
 from services.llm import get_llm_provider, LLMProvider
+from services.i18n import DEFAULT_LANGUAGE, matches_intent, t
 from config import get_settings
 
 logger = logging.getLogger(__name__)
 
 
-# Keywords that must always be routed to a deterministic handler in the
+# Intents that must always be routed to a deterministic handler in the
 # fallback chain instead of the LLM, since the LLM has no grounding/tool-
 # calling for order data, appointments, etc. and would just chat generically.
-DETERMINISTIC_INTENT_KEYWORDS = [
+# Keywords live in services/i18n.py (shared with post_sale.py and
+# scheduling.py, which used to keep their own drifting copies) and are
+# matched across every supported language.
+DETERMINISTIC_INTENTS = (
     # order status ("mi pedido" alone is deliberately excluded - too broad,
     # would hijack normal LLM shopping conversation like "agregar a mi pedido")
-    "estado de mi pedido", "dónde está mi pedido", "donde esta mi pedido",
-    "seguimiento de mi pedido", "rastrear mi pedido",
-    # returns / changes
-    "devolver", "devolución", "devolucion", "reembolso", "cambiar mi pedido", "cambio de producto",
-    # service scheduling
-    "agendar", "reservar", "programar cita", "programar una cita", "cita", "cancelar mi cita",
-]
+    "order_status", "return", "change", "booking", "cancel_appointment",
+)
 
 
 def _is_deterministic_intent(message: str) -> bool:
-    """True if the message matches a keyword that must be handled by a
+    """True if the message matches an intent that must be handled by a
     specific fallback-chain handler (order status/returns/scheduling),
     never by the general-purpose LLM."""
     normalized = message.lower().strip()
     if normalized.startswith("pedido:"):
         return True
-    return any(keyword in normalized for keyword in DETERMINISTIC_INTENT_KEYWORDS)
+    return any(matches_intent(normalized, intent) for intent in DETERMINISTIC_INTENTS)
 
 
 class LLMHandler(BaseWhatsAppHandler):
@@ -85,7 +84,8 @@ class LLMHandler(BaseWhatsAppHandler):
         user_message = message_data.get("message", "").strip()
         session = message_data.get("session", {})
         tenant_name = message_data.get("tenant_name", "Tienda")
-        
+        language = message_data.get("language", DEFAULT_LANGUAGE)
+
         try:
             logger.info("="*60)
             logger.info(f"🟢 LLMHANDLER START - Message: '{user_message[:100]}'")
@@ -119,7 +119,7 @@ class LLMHandler(BaseWhatsAppHandler):
             
             if not provider:
                 logger.error("❌ Could not create LLM provider")
-                return self._get_fallback_message()
+                return self._get_fallback_message(language)
             logger.info(f"✅ Provider created: {type(provider).__name__}")
             
             # Build prompts using provider's methods
@@ -127,7 +127,8 @@ class LLMHandler(BaseWhatsAppHandler):
             system_prompt = provider.build_system_prompt(
                 store_name=tenant_name,
                 personality=personality,
-                available_products=available_products
+                available_products=available_products,
+                language=language
             )
             logger.info(f"✅ System prompt built ({len(system_prompt)} chars)")
             
@@ -157,15 +158,15 @@ class LLMHandler(BaseWhatsAppHandler):
             # Check if there was an LLM error
             if not llm_response:
                 logger.error("❌ LLM returned None!")
-                return self._get_fallback_message()
+                return self._get_fallback_message(language)
             
             if not isinstance(llm_response, dict):
                 logger.error(f"❌ LLM returned invalid type: {type(llm_response)}")
-                return self._get_fallback_message()
+                return self._get_fallback_message(language)
             
             if llm_response.get("llm_error"):
                 logger.warning(f"⚠️ LLM returned error flag: {llm_response.get('response_text', 'Unknown')}")
-                return llm_response.get("response_text", self._get_fallback_message())
+                return llm_response.get("response_text", self._get_fallback_message(language))
             
             logger.info(f"✅ LLM response received!")
             logger.info(f"   Intention: {llm_response.get('intention', 'unknown')}")
@@ -183,26 +184,26 @@ class LLMHandler(BaseWhatsAppHandler):
             if is_modify_intent:
                 logger.info(f"🔄 Handling as MODIFY existing cart item (not add)")
                 return await self._handle_modify_cart_item(
-                    products, response_text, session, tenant_id, phone, current_cart
+                    products, response_text, session, tenant_id, phone, current_cart, language
                 )
             
             # Check if any product requires confirmation
             if intention == "needs_confirmation" or self._any_product_needs_confirmation(products, provider):
                 logger.info(f"🔄 Handling needs_confirmation for {len(products)} products")
                 return await self._handle_needs_confirmation(
-                    products, response_text, session, tenant_id, phone
+                    products, response_text, session, tenant_id, phone, language
                 )
             
             elif intention == "add_to_cart" and products:
                 logger.info(f"🛒 Handling add_to_cart for {len(products)} products")
                 return await self._handle_add_to_cart(
-                    products, response_text, session, tenant_id, phone, current_cart
+                    products, response_text, session, tenant_id, phone, current_cart, language
                 )
             
             elif intention == "remove_from_cart":
                 logger.info("🗑️ Handling remove_from_cart")
                 return await self._handle_remove_from_cart(
-                    products, response_text, session, current_cart
+                    products, response_text, session, current_cart, language
                 )
             
             elif intention == "show_menu":
@@ -212,12 +213,12 @@ class LLMHandler(BaseWhatsAppHandler):
             elif intention == "confirm_order":
                 logger.info("✅ Handling confirm_order")
                 return await self._handle_confirm_order(
-                    response_text, session, current_cart
+                    response_text, session, current_cart, language
                 )
             
             elif intention == "cancel":
                 logger.info("❌ Handling cancel")
-                return await self._handle_cancel(response_text, session)
+                return await self._handle_cancel(response_text, session, language)
             
             else:
                 logger.info(f"💬 Handling other intention: {intention}")
@@ -233,7 +234,7 @@ class LLMHandler(BaseWhatsAppHandler):
             logger.error(f"Error message: {str(e)}")
             logger.error(f"Full traceback:", exc_info=True)
             logger.error("="*60)
-            return self._get_fallback_message()
+            return self._get_fallback_message(language)
     
     async def _get_available_products(self, tenant_id: str) -> List[Dict[str, Any]]:
         """Get list of available products for tenant"""
@@ -333,16 +334,17 @@ class LLMHandler(BaseWhatsAppHandler):
         response_text: str,
         session: Dict[str, Any],
         tenant_id: str,
-        phone: str
+        phone: str,
+        language: str = DEFAULT_LANGUAGE
     ) -> str:
         """Handle products that need confirmation before adding to cart"""
         session_id = session.get("id")
-        
+
         if not session_id:
-            return "Lo siento, no pudo procesar tu pedido. Intenta nuevamente."
-        
+            return t("llm.process_error", language)
+
         if not products:
-            return response_text or "¿Podrías especificar qué producto deseas?"
+            return response_text or t("llm.specify_product", language)
         
         # Match all products in database
         pending_products = []
@@ -374,7 +376,7 @@ class LLMHandler(BaseWhatsAppHandler):
                 products_list_text.append(f"• {matched_product['name']}{mod_text} x{quantity} - ${price:.2f}")
         
         if not pending_products:
-            return f"No encontré los productos. ¿Podrías verificar los nombres?"
+            return t("llm.products_not_found", language)
         
         # Store pending products in session
         session_data = session.get("session_data", {}) or {}
@@ -386,18 +388,10 @@ class LLMHandler(BaseWhatsAppHandler):
         # Build confirmation message with all products
         products_text = "\n".join(products_list_text)
         
-        confirmation_msg = f"""🤔 *Confirmar pedido*
-
-¿Deseas agregar:
-{products_text}
-
-💰 *Total:* ${total:.2f}
-
-Responde:
-✅ *si* / *confirmar* / *sí* - para agregar todo
-❌ *no* / *cancelar* - para descartar"""
-        
-        return confirmation_msg
+        return t(
+            "order.confirm_products", language,
+            items=products_text, total=f"{total:.2f}",
+        )
     
     async def _handle_add_to_cart(
         self,
@@ -406,7 +400,8 @@ Responde:
         session: Dict[str, Any],
         tenant_id: str,
         phone: str,
-        current_cart: List[Dict[str, Any]]
+        current_cart: List[Dict[str, Any]],
+        language: str = DEFAULT_LANGUAGE
     ) -> str:
         """Add products to cart directly (no confirmation needed)"""
         added_products = []
@@ -447,7 +442,7 @@ Responde:
                     cart.append(cart_item)
                     added_products.append(matched_product['name'])
             else:
-                errors.append(product_data.get("name", "Producto desconocido"))
+                errors.append(product_data.get("name", t("llm.unknown_product", language)))
         
         # Calculate total
         total = sum(item["price"] * item["quantity"] for item in cart)
@@ -470,18 +465,13 @@ Responde:
         
         error_text = ""
         if errors:
-            error_text = f"\n\n⚠️ No encontré: {', '.join(errors)}"
-        
-        message = f"""{added_text}
+            error_text = "\n\n" + t("cart.not_found_header", language) + " " + ", ".join(errors)
 
-🛒 *Tu carrito:*
-{cart_text}
-
-💰 *Total:* ${total:.2f}{error_text}
-
-¿Deseas agregar otro producto o confirmar el pedido?"""
-        
-        return message
+        return t(
+            "cart.summary", language,
+            added=added_text, items=cart_text,
+            total=f"{total:.2f}", errors=error_text,
+        )
     
     async def _find_product_in_db(self, tenant_id: str, search_name: str) -> Optional[Dict[str, Any]]:
         """Find product in database by name (fuzzy matching)"""
@@ -515,21 +505,23 @@ Responde:
         products: List[Dict[str, Any]],
         response_text: str,
         session: Dict[str, Any],
-        current_cart: List[Dict[str, Any]]
+        current_cart: List[Dict[str, Any]],
+        language: str = DEFAULT_LANGUAGE
     ) -> str:
         """Remove products from cart"""
         # TODO: Implement removal logic
-        return response_text or "Función de remover productos en desarrollo."
+        return response_text or t("llm.remove_not_implemented", language)
     
     async def _handle_confirm_order(
         self,
         response_text: str,
         session: Dict[str, Any],
-        current_cart: List[Dict[str, Any]]
+        current_cart: List[Dict[str, Any]],
+        language: str = DEFAULT_LANGUAGE
     ) -> str:
         """Handle order confirmation"""
         if not current_cart:
-            return "Tu carrito está vacío. Agrega productos primero."
+            return t("cart.empty", language)
         
         # Transition to confirming state
         session_id = session.get("id")
@@ -543,16 +535,11 @@ Responde:
         
         total = sum(item["price"] * item["quantity"] for item in current_cart)
         
-        return f"""📋 *Resumen de tu pedido:*
-
-{cart_text}
-
-💰 *Total a pagar:* ${total:.2f}
-
-✅ ¿Confirmas este pedido?
-Responde *sí* para confirmar o *no* para seguir agregando."""
+        return t("order.summary", language, items=cart_text, total=f"{total:.2f}")
     
-    async def _handle_cancel(self, response_text: str, session: Dict[str, Any]) -> str:
+    async def _handle_cancel(
+        self, response_text: str, session: Dict[str, Any], language: str = DEFAULT_LANGUAGE
+    ) -> str:
         """Handle order cancellation"""
         session_id = session.get("id")
         
@@ -565,7 +552,7 @@ Responde *sí* para confirmar o *no* para seguir agregando."""
             session_data["awaiting_confirmation"] = False
             await self.update_session_state(session_id, "initial", session_data)
         
-        return response_text or "Pedido cancelado. Escribe *hola* para comenzar de nuevo."
+        return response_text or t("order.cancelled", language)
     
     async def _handle_modify_cart_item(
         self,
@@ -574,7 +561,8 @@ Responde *sí* para confirmar o *no* para seguir agregando."""
         session: Dict[str, Any],
         tenant_id: str,
         phone: str,
-        current_cart: List[Dict[str, Any]]
+        current_cart: List[Dict[str, Any]],
+        language: str = DEFAULT_LANGUAGE
     ):
         """
         Handle modification of existing cart items (not adding new ones)
@@ -583,7 +571,7 @@ Responde *sí* para confirmar o *no* para seguir agregando."""
         session_id = session.get("id")
         
         if not products:
-            return response_text or "¿Qué producto quieres modificar?"
+            return response_text or t("llm.what_to_modify", language)
         
         modified_count = 0
         modification_details = []
@@ -620,9 +608,16 @@ Responde *sí* para confirmar o *no* para seguir agregando."""
         
         # Response
         if modified_count > 0:
-            response = f"✅ Modificado: {', '.join(modification_details)}\n\n🛒 Carrito actual:\n{cart_summary}\n\n💰 Total: ${total:.2f}\n\n¿Deseas confirmar el pedido o agregar algo más?"
+            response = t(
+                "llm.modified", language,
+                details=", ".join(modification_details),
+                items=cart_summary, total=f"{total:.2f}",
+            )
         else:
-            response = f"No encontré ese producto en tu carrito.\n\n🛒 Carrito actual:\n{cart_summary}\n\n💰 Total: ${total:.2f}"
+            response = t(
+                "llm.not_in_cart", language,
+                items=cart_summary, total=f"{total:.2f}",
+            )
         
         # Update session
         if session_id:
@@ -666,13 +661,6 @@ Responde *sí* para confirmar o *no* para seguir agregando."""
         except Exception as e:
             logger.error(f"Error updating history: {e}")
     
-    def _get_fallback_message(self) -> str:
+    def _get_fallback_message(self, language: str = DEFAULT_LANGUAGE) -> str:
         """Get fallback message when LLM fails"""
-        return """🤖 Lo siento, no pude procesar tu mensaje con inteligencia artificial en este momento.
-
-Puedes intentar pedir de estas formas:
-• Escribe el nombre exacto del producto (ej: "hamburguesa clásica")
-• Escribe "menu" para ver la lista de productos
-• Para pedidos simples, escribe: "[producto] y [producto]" (ej: "hamburguesa y papas")
-
-¿En qué puedo ayudarte? Escribe "hola" para comenzar."""
+        return t("llm.fallback", language)

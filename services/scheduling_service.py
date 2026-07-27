@@ -165,14 +165,19 @@ class SchedulingService:
     async def cancel_appointment(
         self, tenant_id: str, appointment_id: str, reason: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Cancels an appointment if outside the cancellation-policy window."""
+        """Cancels an appointment if outside the cancellation-policy window.
+
+        Returns a `message_key` (plus any `message_params`) rather than a
+        formatted string, so the caller can render it in the customer's
+        language - this service has no idea who it's talking to.
+        """
         try:
             result = self.db.table("appointments").select("*").eq(
                 "id", appointment_id
             ).eq("tenant_id", tenant_id).execute()
 
             if not result.data:
-                return {"success": False, "message": "No encontramos esa cita."}
+                return {"success": False, "message_key": "scheduling.appointment_not_found"}
 
             appointment = result.data[0]
             scheduled_at = datetime.fromisoformat(appointment["scheduled_at"])
@@ -182,10 +187,8 @@ class SchedulingService:
             if hours_until < policy_hours:
                 return {
                     "success": False,
-                    "message": (
-                        f"No es posible cancelar con menos de {policy_hours}h de "
-                        "anticipación. Por favor contacta directamente al negocio."
-                    ),
+                    "message_key": "scheduling.cancel_policy",
+                    "message_params": {"hours": policy_hours},
                 }
 
             self.db.table("appointments").update({
@@ -194,10 +197,10 @@ class SchedulingService:
             }).eq("id", appointment_id).execute()
 
             await self._notify_seller(tenant_id, appointment, "Cita cancelada")
-            return {"success": True, "message": "Tu cita fue cancelada."}
+            return {"success": True, "message_key": "scheduling.cancel_success"}
         except Exception as e:
             logger.error(f"Error cancelling appointment {appointment_id}: {e}")
-            return {"success": False, "message": "Ocurrió un error al cancelar tu cita."}
+            return {"success": False, "message_key": "scheduling.cancel_error"}
 
     async def get_reminders_due(self, kind: str) -> List[Dict[str, Any]]:
         """Appointments needing a '24h' or '1h' reminder, not yet sent.

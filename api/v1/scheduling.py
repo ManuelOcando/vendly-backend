@@ -6,6 +6,7 @@ from datetime import date as date_type
 from pydantic import BaseModel
 
 from services.scheduling_service import SchedulingService
+from services.i18n import DEFAULT_LANGUAGE, t
 
 router = APIRouter(prefix="/appointments")
 
@@ -62,7 +63,11 @@ async def cancel_appointment(
     service = SchedulingService()
     outcome = await service.cancel_appointment(tenant["id"], appointment_id, data.reason)
 
-    if not outcome["success"]:
-        raise HTTPException(status_code=400, detail=outcome["message"])
+    # This endpoint is part of the seller-facing dashboard, so the message is
+    # rendered in the default language rather than a customer's.
+    message = t(outcome["message_key"], DEFAULT_LANGUAGE, **outcome.get("message_params", {}))
 
-    return {"message": outcome["message"]}
+    if not outcome["success"]:
+        raise HTTPException(status_code=400, detail=message)
+
+    return {"message": message}

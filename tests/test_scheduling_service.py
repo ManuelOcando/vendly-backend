@@ -111,7 +111,8 @@ class TestCancelAppointment:
         outcome = await service.cancel_appointment("tenant-1", "appt-1")
 
         assert outcome["success"] is False
-        assert "24h" in outcome["message"]
+        assert outcome["message_key"] == "scheduling.cancel_policy"
+        assert outcome["message_params"]["hours"] == 24
 
     @pytest.mark.asyncio
     async def test_allows_cancellation_outside_policy_window(self):
