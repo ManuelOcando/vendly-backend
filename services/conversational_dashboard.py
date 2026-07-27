@@ -4,13 +4,15 @@ Implements WhatsApp-based interface for business owners with smart alerts system
 """
 from typing import Dict, Any, Optional, List
 import logging
-from datetime import datetime, timedelta
+import re
+from datetime import datetime, timedelta, date
 import json
 from dataclasses import dataclass
 from enum import Enum
 
 from db.supabase import get_supabase_client
 from services.advanced_analytics_service import AdvancedAnalyticsService
+from services.offline_mode_service import OfflineModeService, parse_weekly_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +89,7 @@ class ConversationalDashboard:
     def __init__(self, db=None):
         self.db = db or get_supabase_client()
         self.advanced_analytics = AdvancedAnalyticsService(db=self.db)
+        self.offline_service = OfflineModeService(db=self.db)
 
     async def process_seller_command(
         self,
@@ -125,6 +128,16 @@ class ConversationalDashboard:
                 return await self._show_active_alerts(tenant_id)
         elif "preguntas frecuentes" in command_lower or "faq" in command_lower:
             return await self._get_frequent_questions(tenant_id)
+        elif "feriado" in command_lower:
+            return await self._configure_holiday_exception(tenant_id, command)
+        elif "horario" in command_lower:
+            return await self._configure_business_hours(tenant_id, command)
+        elif "modo offline" in command_lower:
+            return await self._toggle_offline_mode(tenant_id, command_lower)
+        elif "pausar bot" in command_lower or "reanudar bot" in command_lower:
+            return await self._toggle_bot_paused(tenant_id, command_lower)
+        elif "mensaje offline" in command_lower:
+            return await self._configure_offline_message(tenant_id, command)
         elif "config" in command_lower or "configuración" in command_lower:
             return await self._get_configuration_menu(tenant_id)
         else:
@@ -999,6 +1012,122 @@ Usa "alertas" para ver alertas activas."""
             logger.error(f"Error getting frequent questions: {e}")
             return "Error al obtener preguntas frecuentes."
     
+    async def _configure_business_hours(self, tenant_id: str, command: str) -> str:
+        """Configure weekly business hours - either the full week at once
+        (multi-line, days not mentioned become closed) or a single day
+        correction (one line, leaves the rest of the week untouched)."""
+        lines = [l for l in command.strip().split("\n") if l.strip()]
+        parsed = parse_weekly_schedule(command)
+
+        if not parsed:
+            return """❌ Formato inválido. Ejemplos:
+
+Semana completa (reemplaza todos los días, los que no menciones quedan cerrados):
+```
+configurar horarios
+Lunes a Viernes: 9:00 - 21:00
+Sábado: 10:00 - 14:00
+Domingo: cerrado
+```
+
+Un solo día (no afecta el resto de la semana):
+"configurar horario sábado 10:00 14:00"
+"configurar horario domingo cerrado\""""
+
+        replace_week = len(lines) > 1
+        success = await self.offline_service.set_business_hours(
+            tenant_id, parsed, replace_week=replace_week
+        )
+
+        if not success:
+            return "Error configurando los horarios."
+
+        days_map = {
+            "monday": "Lunes", "tuesday": "Martes", "wednesday": "Miércoles",
+            "thursday": "Jueves", "friday": "Viernes", "saturday": "Sábado", "sunday": "Domingo",
+        }
+        summary_lines = []
+        for day, hours in parsed.items():
+            day_name = days_map.get(day, day)
+            if hours.get("closed"):
+                summary_lines.append(f"• {day_name}: cerrado")
+            else:
+                summary_lines.append(f"• {day_name}: {hours['open']} - {hours['close']}")
+
+        prefix = "✅ Horarios configurados:\n" if replace_week else "✅ Horario actualizado:\n"
+        return prefix + "\n".join(summary_lines)
+
+    async def _configure_holiday_exception(self, tenant_id: str, command: str) -> str:
+        """Configure a one-off calendar-date exception (holiday), independent
+        of the recurring weekly schedule."""
+        date_match = re.search(r'(\d{1,2})/(\d{1,2})(?:/(\d{4}))?', command)
+        if not date_match:
+            return """❌ Formato inválido. Ejemplos:
+"configurar feriado 25/12 cerrado"
+"configurar feriado 24/12 09:00 13:00\""""
+
+        day, month, year = date_match.groups()
+        year = int(year) if year else datetime.now().year
+        try:
+            exception_date = date(year, int(month), int(day))
+        except ValueError:
+            return "Fecha inválida."
+
+        command_lower = command.lower()
+        if "cerrado" in command_lower:
+            success = await self.offline_service.set_date_exception(
+                tenant_id, exception_date, is_closed=True
+            )
+            label = "cerrado"
+        else:
+            time_match = re.search(r'(\d{1,2}:\d{2})\D+(\d{1,2}:\d{2})', command)
+            if not time_match:
+                return """❌ Formato inválido. Ejemplos:
+"configurar feriado 25/12 cerrado"
+"configurar feriado 24/12 09:00 13:00\""""
+            open_time, close_time = time_match.groups()
+            success = await self.offline_service.set_date_exception(
+                tenant_id, exception_date, is_closed=False,
+                open_time=open_time, close_time=close_time
+            )
+            label = f"{open_time} - {close_time}"
+
+        if not success:
+            return "Error configurando el feriado."
+
+        return f"✅ {exception_date.strftime('%d/%m/%Y')}: {label}"
+
+    async def _toggle_offline_mode(self, tenant_id: str, command_lower: str) -> str:
+        """Enable/disable the automatic offline-mode detection (business
+        hours + inactivity). Distinct from pausing the bot outright."""
+        enable = "desactivar" not in command_lower
+        success = await self.offline_service.set_auto_reply_enabled(tenant_id, enable)
+        if not success:
+            return "Error configurando el modo offline."
+        return "✅ Modo offline automático activado." if enable else "✅ Modo offline automático desactivado."
+
+    async def _toggle_bot_paused(self, tenant_id: str, command_lower: str) -> str:
+        """Manual override: pause/resume the bot regardless of business hours."""
+        resume = "reanudar" in command_lower
+        success = await self.offline_service.set_bot_paused(tenant_id, not resume)
+        if not success:
+            return "Error pausando el bot." if not resume else "Error reanudando el bot."
+        if resume:
+            return "✅ Bot reanudado."
+        return "✅ Bot pausado. Los clientes recibirán el aviso de fuera de horario hasta que reanudes."
+
+    async def _configure_offline_message(self, tenant_id: str, command: str) -> str:
+        """Set a custom message shown to customers while offline."""
+        custom_message = re.sub(
+            r'configurar mensaje offline\s*:?\s*', "", command, count=1, flags=re.IGNORECASE
+        ).strip()
+        if not custom_message:
+            return 'Formato: "configurar mensaje offline [texto]"'
+        success = await self.offline_service.set_offline_message(tenant_id, custom_message)
+        if not success:
+            return "Error configurando el mensaje offline."
+        return f"✅ Mensaje offline actualizado:\n{custom_message}"
+
     async def _get_configuration_menu(self, tenant_id: str) -> str:
         """Show configuration menu"""
         return """⚙️ *Configuración del Bot*
@@ -1006,13 +1135,25 @@ Usa "alertas" para ver alertas activas."""
 Configura tu bot de WhatsApp:
 
 1️⃣ *Horarios* - Configura horarios de atención
-   Comando: "configurar horarios [inicio] [fin]"
-   Ejemplo: "configurar horarios 9:00 21:00"
+   Semana completa: envía "configurar horarios" seguido de una línea por día
+   Ejemplo:
+   configurar horarios
+   Lunes a Viernes: 9:00 - 21:00
+   Sábado: 10:00 - 14:00
+   Domingo: cerrado
 
-2️⃣ *Modo offline* - Configura respuestas cuando estés offline
+   Un solo día: "configurar horario sábado 10:00 14:00" o "configurar horario domingo cerrado"
+
+1️⃣.1 *Feriados* - Cierra o cambia el horario de una fecha puntual
+   Comando: "configurar feriado 25/12 cerrado" o "configurar feriado 24/12 09:00 13:00"
+
+2️⃣ *Modo offline* - Activa o desactiva la detección automática (horario/inactividad)
    Comando: "activar modo offline" o "desactivar modo offline"
 
-3️⃣ *Pausar bot* - Pausa temporalmente el bot
+2️⃣.1 *Mensaje offline* - Personaliza el aviso que reciben los clientes
+   Comando: "configurar mensaje offline [texto]"
+
+3️⃣ *Pausar bot* - Pausa el bot manualmente, sin importar el horario
    Comando: "pausar bot" o "reanudar bot"
 
 4️⃣ *Alertas* - Configura alertas inteligentes

@@ -14,15 +14,17 @@ from services.whatsapp.handlers import (
     OnboardingHandler, PostSaleHandler, ServiceSchedulingHandler
 )
 from services.conversational_dashboard import ConversationalDashboard
+from services.offline_mode_service import OfflineModeService
 
 logger = logging.getLogger(__name__)
 
 class MetaWhatsAppBotService:
     """WhatsApp Bot Service for Meta API using Chain of Responsibility"""
-    
+
     def __init__(self):
         self.db = get_supabase_client()
         self.dashboard = ConversationalDashboard(self.db)
+        self.offline_service = OfflineModeService(self.db)
         self._setup_handlers()
     
     def _setup_handlers(self):
@@ -80,7 +82,26 @@ class MetaWhatsAppBotService:
             
             # Check if user is seller
             is_seller = await self._is_seller(tenant_id, phone)
-            
+
+            is_onboarding = tenant.get("onboarding_status") in (None, "not_started", "in_progress")
+
+            if is_seller:
+                # Reset the inactivity clock and flush any offline messages
+                # left by customers while the seller was away (non-blocking).
+                await self.offline_service.record_seller_activity(tenant_id)
+                asyncio.create_task(self.offline_service.notify_seller_of_pending_messages(tenant_id))
+            elif not is_onboarding and await self.offline_service.is_offline(tenant_id):
+                offline_reply = await self.offline_service.get_offline_reply(tenant_id)
+                await self.offline_service.store_offline_message(tenant_id, phone, message)
+                await self._log_message(
+                    tenant_id=tenant_id,
+                    direction="outbound",
+                    phone=phone,
+                    content=offline_reply,
+                    status="delivered"
+                )
+                return offline_reply
+
             # Prepare message data for handlers
             message_data = {
                 "tenant_id": tenant_id,
@@ -136,7 +157,7 @@ class MetaWhatsAppBotService:
     async def _get_tenant(self, tenant_id: str) -> Optional[Dict[str, Any]]:
         """Get tenant information"""
         try:
-            result = self.db.table("tenants").select("id, name").eq("id", tenant_id).execute()
+            result = self.db.table("tenants").select("id, name, onboarding_status").eq("id", tenant_id).execute()
             return result.data[0] if result.data else None
         except Exception as e:
             logger.error(f"Error getting tenant: {e}")

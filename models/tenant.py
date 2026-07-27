@@ -12,18 +12,6 @@ class TenantCreate(BaseModel):
     whatsapp_number: Optional[str] = None
 
 
-class TenantUpdate(BaseModel):
-    """Para actualizar config del tenant."""
-    name: Optional[str] = None
-    description: Optional[str] = None
-    whatsapp_number: Optional[str] = None
-    bot_personality: Optional[str] = None
-    bot_enabled: Optional[bool] = None
-    bot_schedule: Optional[dict] = None
-    payment_config: Optional[dict] = None
-    store_config: Optional[dict] = None
-
-
 class TenantResponse(BaseModel):
     id: str
     owner_id: str
@@ -34,11 +22,6 @@ class TenantResponse(BaseModel):
     logo_url: Optional[str] = None
     whatsapp_number: Optional[str] = None
     whatsapp_connected: bool = False
-    bot_enabled: bool = True
-    bot_personality: Optional[str] = None
-    bot_schedule: Optional[dict] = None
-    payment_config: Optional[dict] = None
-    store_config: Optional[dict] = None
     subscription_plan: str = "trial"
     subscription_expires_at: Optional[str] = None
     onboarding_status: str = "not_started"

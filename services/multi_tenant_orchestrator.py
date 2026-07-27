@@ -11,7 +11,6 @@ import logging
 import uuid
 
 from db.supabase import get_supabase_client
-from models.tenant import TenantCreate, TenantUpdate, TenantResponse
 from models.vendly_pro import (
     IndustryType, PlanType, SubscriptionStatus, TenantSubscriptionCreate
 )
@@ -207,8 +206,8 @@ class MultiTenantOrchestrator:
             # Create subscription
             await self._create_subscription(tenant_id, tier)
             
-            # Create default WhatsApp config
-            await self._create_whatsapp_config(tenant_id)
+            # Create default bot configuration (business hours, offline mode, etc.)
+            await self._create_bot_configuration(tenant_id)
             
             # Create default seller config
             if tenant_data and tenant_data.get("seller_phone"):
@@ -349,45 +348,54 @@ class MultiTenantOrchestrator:
         }
         return tiers[plan_type]
     
-    async def _create_whatsapp_config(self, tenant_id: str) -> None:
-        """Create default WhatsApp configuration for tenant"""
+    async def _create_bot_configuration(self, tenant_id: str) -> None:
+        """Create default bot_configurations row for tenant (business hours,
+        offline mode, welcome messages, etc.). All columns have DB defaults,
+        so an empty insert is enough to give the tenant a row to configure
+        later via the WhatsApp seller commands.
+
+        NOTE: this replaces a previous version of this method that inserted
+        into `whatsapp_configs` with columns (`bot_schedule`, `payment_config`,
+        `store_config`, ...) that don't exist on that table - it would have
+        failed against a real Postgres/Supabase database. Real WhatsApp
+        connection data (phone_number_id/access_token) is provisioned later,
+        when the seller actually connects via POST /api/v1/whatsapp/config.
+        """
         try:
-            config = {
-                "tenant_id": tenant_id,
-                "bot_enabled": True,
-                "bot_personality": "casual",
-                "bot_schedule": {
-                    "monday": {"start": "11:00", "end": "22:00"},
-                    "tuesday": {"start": "11:00", "end": "22:00"},
-                    "wednesday": {"start": "11:00", "end": "22:00"},
-                    "thursday": {"start": "11:00", "end": "22:00"},
-                    "friday": {"start": "11:00", "end": "23:00"},
-                    "saturday": {"start": "11:00", "end": "23:00"},
-                    "sunday": {"start": "12:00", "end": "21:00"}
-                },
-                "payment_config": {
-                    "methods": ["bank_transfer", "cash"],
-                    "required": False
-                },
-                "store_config": {
-                    "currency": "VES",
-                    "timezone": "America/Caracas"
-                }
-            }
-            
-            self.db.table("whatsapp_configs").insert(config).execute()
-            logger.info(f"Created WhatsApp config for tenant {tenant_id}")
-            
+            self.db.table("bot_configurations").insert({
+                "tenant_id": tenant_id
+            }).execute()
+            logger.info(f"Created bot configuration for tenant {tenant_id}")
         except Exception as e:
-            logger.error(f"Error creating WhatsApp config: {e}")
+            logger.error(f"Error creating bot configuration: {e}")
             raise
-    
+
     async def _update_seller_phone(self, tenant_id: str, seller_phone: str) -> None:
-        """Update seller phone in WhatsApp config"""
+        """Set the seller's personal phone number, used to distinguish the
+        business owner from customers messaging the bot (see
+        MetaWhatsAppBotService._is_seller). Upserts into whatsapp_configs
+        since that table may not have a row yet at tenant-creation time -
+        real Meta credentials get filled in later when the seller connects
+        (POST /api/v1/whatsapp/config), which updates this same row rather
+        than inserting a duplicate.
+        """
         try:
-            self.db.table("whatsapp_configs").update({
-                "seller_phone": seller_phone
-            }).eq("tenant_id", tenant_id).execute()
+            existing = self.db.table("whatsapp_configs").select("id").eq(
+                "tenant_id", tenant_id
+            ).execute()
+
+            if existing.data:
+                self.db.table("whatsapp_configs").update({
+                    "seller_phone": seller_phone
+                }).eq("tenant_id", tenant_id).execute()
+            else:
+                self.db.table("whatsapp_configs").insert({
+                    "tenant_id": tenant_id,
+                    "seller_phone": seller_phone,
+                    "phone_number_id": "",
+                    "access_token": "",
+                }).execute()
+
             logger.info(f"Updated seller phone for tenant {tenant_id}")
         except Exception as e:
             logger.error(f"Error updating seller phone: {e}")

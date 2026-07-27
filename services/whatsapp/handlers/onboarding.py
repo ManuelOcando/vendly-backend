@@ -12,6 +12,7 @@ import re
 from datetime import datetime
 
 from .base import BaseWhatsAppHandler
+from services.offline_mode_service import OfflineModeService, parse_weekly_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -234,8 +235,8 @@ Domingo: 12:00 PM - 9:00 PM
     
     async def _handle_business_hours(self, tenant_id: str, phone: str, message: str, onboarding_data: Dict) -> str:
         """Handle business hours configuration"""
-        hours_data = self._parse_business_hours(message)
-        
+        hours_data = parse_weekly_schedule(message)
+
         if not hours_data:
             return """❌ *Formato de horarios inválido.*
 
@@ -248,9 +249,14 @@ Domingo: 12:00 PM - 9:00 PM
 ```
 
 O si tienes horarios diferentes, envíame tu configuración y te ayudo a ajustarla."""
-        
-        # Save business hours
+
+        # Save business hours (session, for display during onboarding) and
+        # persist to bot_configurations.business_hours so scheduling/offline
+        # mode actually see the hours the seller just configured.
         await self._update_onboarding_data(tenant_id, phone, {"business_hours": hours_data})
+        await OfflineModeService(self.db).set_business_hours(
+            tenant_id, hours_data, replace_week=True
+        )
         
         # Move to next step
         await self._update_onboarding_state(tenant_id, phone, OnboardingState.PRODUCT_UPLOAD)
@@ -466,60 +472,6 @@ Escribe "configurar" para comenzar."""
     # HELPER METHODS
     # ============================================
     
-    def _parse_business_hours(self, message: str) -> Optional[Dict[str, Any]]:
-        """Parse business hours from user message"""
-        hours = {}
-        lines = message.strip().split("\n")
-        
-        day_patterns = {
-            "lunes a viernes": ["monday", "tuesday", "wednesday", "thursday", "friday"],
-            "lunes-viernes": ["monday", "tuesday", "wednesday", "thursday", "friday"],
-            "sábado": ["saturday"],
-            "sabado": ["saturday"],
-            "domingo": ["sunday"],
-            "lunes": ["monday"],
-            "martes": ["tuesday"],
-            "miércoles": ["wednesday"],
-            "miercoles": ["wednesday"],
-            "jueves": ["thursday"],
-            "viernes": ["friday"]
-        }
-        
-        time_pattern = r'(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)\s*-\s*(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)'
-        
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            
-            # Try to match day pattern
-            matched_days = None
-            for day_key, days in day_patterns.items():
-                if day_key in line.lower():
-                    matched_days = days
-                    break
-            
-            if not matched_days:
-                continue
-            
-            # Try to match time pattern
-            time_match = re.search(time_pattern, line, re.IGNORECASE)
-            if not time_match:
-                continue
-            
-            start_time = time_match.group(1)
-            end_time = time_match.group(2)
-            
-            for day in matched_days:
-                hours[day] = {
-                    "start": start_time,
-                    "end": end_time
-                }
-        
-        if hours:
-            return hours
-        return None
-    
     def _format_business_hours(self, hours: Dict[str, Any]) -> str:
         """Format business hours for display"""
         days_map = {
@@ -531,12 +483,15 @@ Escribe "configurar" para comenzar."""
             "saturday": "Sábado",
             "sunday": "Domingo"
         }
-        
+
         lines = []
         for day, times in hours.items():
             day_name = days_map.get(day, day)
-            lines.append(f"• {day_name}: {times['start']} - {times['end']}")
-        
+            if times.get("closed"):
+                lines.append(f"• {day_name}: cerrado")
+            else:
+                lines.append(f"• {day_name}: {times['open']} - {times['close']}")
+
         return "\n".join(lines)
     
     def _parse_product_info(self, message: str) -> Dict[str, Any]:

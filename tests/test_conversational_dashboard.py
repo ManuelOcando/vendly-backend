@@ -204,7 +204,115 @@ class TestConversationalDashboard:
         assert "Configuración del Bot" in response
         assert "Horarios" in response
         assert "Modo offline" in response
-    
+
+    @pytest.mark.asyncio
+    async def test_process_seller_command_configurar_horarios_semana_completa(self, dashboard, mock_db):
+        """Full-week schedule (multi-line) replaces the week and closes unmentioned days"""
+        command = "configurar horarios\nLunes a Viernes: 9:00 - 21:00\nSábado: 10:00 - 14:00\nDomingo: cerrado"
+        response = await dashboard.process_seller_command(
+            tenant_id="tenant1", seller_phone="+1234567890", command=command
+        )
+
+        assert "Horarios configurados" in response
+        assert "Lunes" in response
+        assert "cerrado" in response.lower()
+
+    @pytest.mark.asyncio
+    async def test_process_seller_command_configurar_horario_un_dia(self, dashboard, mock_db):
+        """Single-day correction doesn't claim to replace the whole week"""
+        response = await dashboard.process_seller_command(
+            tenant_id="tenant1", seller_phone="+1234567890",
+            command="configurar horario sabado 10:00 14:00"
+        )
+
+        assert "Horario actualizado" in response
+        assert "Sábado" in response
+
+    @pytest.mark.asyncio
+    async def test_process_seller_command_configurar_horario_formato_invalido(self, dashboard, mock_db):
+        response = await dashboard.process_seller_command(
+            tenant_id="tenant1", seller_phone="+1234567890", command="configurar horarios"
+        )
+
+        assert "Formato inválido" in response
+
+    @pytest.mark.asyncio
+    async def test_process_seller_command_configurar_feriado_cerrado(self, dashboard, mock_db):
+        response = await dashboard.process_seller_command(
+            tenant_id="tenant1", seller_phone="+1234567890",
+            command="configurar feriado 25/12 cerrado"
+        )
+
+        assert "25/12" in response
+        assert "cerrado" in response.lower()
+
+    @pytest.mark.asyncio
+    async def test_process_seller_command_configurar_feriado_horario_especial(self, dashboard, mock_db):
+        response = await dashboard.process_seller_command(
+            tenant_id="tenant1", seller_phone="+1234567890",
+            command="configurar feriado 24/12 09:00 13:00"
+        )
+
+        assert "24/12" in response
+        assert "09:00" in response
+
+    @pytest.mark.asyncio
+    async def test_process_seller_command_configurar_feriado_formato_invalido(self, dashboard, mock_db):
+        response = await dashboard.process_seller_command(
+            tenant_id="tenant1", seller_phone="+1234567890", command="configurar feriado"
+        )
+
+        assert "Formato inválido" in response
+
+    @pytest.mark.asyncio
+    async def test_process_seller_command_activar_modo_offline(self, dashboard, mock_db):
+        response = await dashboard.process_seller_command(
+            tenant_id="tenant1", seller_phone="+1234567890", command="activar modo offline"
+        )
+
+        assert "activado" in response.lower()
+
+    @pytest.mark.asyncio
+    async def test_process_seller_command_desactivar_modo_offline(self, dashboard, mock_db):
+        response = await dashboard.process_seller_command(
+            tenant_id="tenant1", seller_phone="+1234567890", command="desactivar modo offline"
+        )
+
+        assert "desactivado" in response.lower()
+
+    @pytest.mark.asyncio
+    async def test_process_seller_command_pausar_bot(self, dashboard, mock_db):
+        response = await dashboard.process_seller_command(
+            tenant_id="tenant1", seller_phone="+1234567890", command="pausar bot"
+        )
+
+        assert "pausado" in response.lower()
+
+    @pytest.mark.asyncio
+    async def test_process_seller_command_reanudar_bot(self, dashboard, mock_db):
+        response = await dashboard.process_seller_command(
+            tenant_id="tenant1", seller_phone="+1234567890", command="reanudar bot"
+        )
+
+        assert "reanudado" in response.lower()
+
+    @pytest.mark.asyncio
+    async def test_process_seller_command_configurar_mensaje_offline(self, dashboard, mock_db):
+        response = await dashboard.process_seller_command(
+            tenant_id="tenant1", seller_phone="+1234567890",
+            command="configurar mensaje offline Volvemos el lunes!"
+        )
+
+        assert "Volvemos el lunes!" in response
+
+    @pytest.mark.asyncio
+    async def test_process_seller_command_configurar_mensaje_offline_vacio(self, dashboard, mock_db):
+        response = await dashboard.process_seller_command(
+            tenant_id="tenant1", seller_phone="+1234567890", command="configurar mensaje offline"
+        )
+
+        assert "Formato" in response
+
     @pytest.mark.asyncio
     async def test_process_seller_command_analytics_espanol(self, dashboard, mock_db):
         """Test processing 'estadísticas' command (Spanish version)"""

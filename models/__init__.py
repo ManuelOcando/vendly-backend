@@ -4,7 +4,7 @@ Models package for Vendly
 
 from .category import CategoryCreate, CategoryUpdate, CategoryResponse
 from .item import ItemCreate, ItemUpdate, ItemResponse
-from .tenant import TenantCreate, TenantUpdate, TenantResponse
+from .tenant import TenantCreate, TenantResponse
 from .vendly_pro import (
     # Enums
     LoyaltyTier,
@@ -71,7 +71,7 @@ __all__ = [
     # Core models
     "CategoryCreate", "CategoryUpdate", "CategoryResponse",
     "ItemCreate", "ItemUpdate", "ItemResponse",
-    "TenantCreate", "TenantUpdate", "TenantResponse",
+    "TenantCreate", "TenantResponse",
     
     # Vendly Pro Enums
     "LoyaltyTier", "RewardType", "MessageType", "IndustryType", "PlanType", "SubscriptionStatus",

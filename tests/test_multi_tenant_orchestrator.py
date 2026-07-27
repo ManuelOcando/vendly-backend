@@ -71,7 +71,7 @@ class TestMultiTenantOrchestratorCreateTenant:
         # Mock helper methods
         orchestrator._apply_industry_template = AsyncMock()
         orchestrator._create_subscription = AsyncMock()
-        orchestrator._create_whatsapp_config = AsyncMock()
+        orchestrator._create_bot_configuration = AsyncMock()
         
         # Test
         result = await orchestrator.create_tenant(
@@ -108,7 +108,7 @@ class TestMultiTenantOrchestratorCreateTenant:
         
         orchestrator._apply_industry_template = AsyncMock()
         orchestrator._create_subscription = AsyncMock()
-        orchestrator._create_whatsapp_config = AsyncMock()
+        orchestrator._create_bot_configuration = AsyncMock()
         
         # Test with invalid industry
         result = await orchestrator.create_tenant(
@@ -144,7 +144,7 @@ class TestMultiTenantOrchestratorCreateTenant:
         
         orchestrator._apply_industry_template = AsyncMock()
         orchestrator._create_subscription = AsyncMock()
-        orchestrator._create_whatsapp_config = AsyncMock()
+        orchestrator._create_bot_configuration = AsyncMock()
         
         # Test retail industry
         result = await orchestrator.create_tenant(
@@ -181,7 +181,7 @@ class TestMultiTenantOrchestratorCreateTenant:
         
         orchestrator._apply_industry_template = AsyncMock()
         orchestrator._create_subscription = AsyncMock()
-        orchestrator._create_whatsapp_config = AsyncMock()
+        orchestrator._create_bot_configuration = AsyncMock()
         
         # Test services industry
         result = await orchestrator.create_tenant(
@@ -220,7 +220,7 @@ class TestMultiTenantOrchestratorCreateTenant:
         
         orchestrator._apply_industry_template = AsyncMock()
         orchestrator._create_subscription = AsyncMock()
-        orchestrator._create_whatsapp_config = AsyncMock()
+        orchestrator._create_bot_configuration = AsyncMock()
         orchestrator._update_seller_phone = AsyncMock()
         
         # Test with custom tenant data

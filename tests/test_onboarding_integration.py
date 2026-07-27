@@ -20,6 +20,7 @@ from services.whatsapp.handlers.onboarding import (
 )
 from services.multi_tenant_orchestrator import MultiTenantOrchestrator
 from services.industry_templates import IndustryTemplatesService, IndustryType
+from services.offline_mode_service import parse_weekly_schedule
 
 
 class TestRestaurantOnboardingCompleteFlow:
@@ -207,58 +208,58 @@ Descripción: Ensalada con pollo a la parrilla"""
         assert product["price"] == 0  # Default value when parsing fails
     
     def test_parse_business_hours_valid(self, handler):
-        """Test parsing of valid business hours"""
+        """Test parsing of valid business hours (normalized to 24h open/close)"""
         message = """Lunes a Viernes: 11:00 AM - 10:00 PM
 Sábado: 11:00 AM - 11:00 PM
 Domingo: 12:00 PM - 9:00 PM"""
-        
-        hours = handler._parse_business_hours(message)
-        
-        assert hours is not None
+
+        hours = parse_weekly_schedule(message)
+
+        assert hours
         assert "monday" in hours
         assert "saturday" in hours
         assert "sunday" in hours
-        assert hours["monday"]["start"] == "11:00 AM"
-        assert hours["monday"]["end"] == "10:00 PM"
-        assert hours["saturday"]["start"] == "11:00 AM"
-        assert hours["saturday"]["end"] == "11:00 PM"
-        assert hours["sunday"]["start"] == "12:00 PM"
-        assert hours["sunday"]["end"] == "9:00 PM"
-    
+        assert hours["monday"]["open"] == "11:00"
+        assert hours["monday"]["close"] == "22:00"
+        assert hours["saturday"]["open"] == "11:00"
+        assert hours["saturday"]["close"] == "23:00"
+        assert hours["sunday"]["open"] == "12:00"
+        assert hours["sunday"]["close"] == "21:00"
+
     def test_parse_business_hours_single_day(self, handler):
         """Test parsing of single day business hours"""
         message = "Lunes: 9:00 AM - 6:00 PM"
-        
-        hours = handler._parse_business_hours(message)
-        
-        assert hours is not None
+
+        hours = parse_weekly_schedule(message)
+
+        assert hours
         assert "monday" in hours
-        assert hours["monday"]["start"] == "9:00 AM"
-        assert hours["monday"]["end"] == "6:00 PM"
-    
+        assert hours["monday"]["open"] == "09:00"
+        assert hours["monday"]["close"] == "18:00"
+
     def test_parse_business_hours_invalid(self, handler):
         """Test parsing of invalid business hours"""
         message = "No tengo horarios definidos"
-        
-        hours = handler._parse_business_hours(message)
-        
-        assert hours is None
-    
+
+        hours = parse_weekly_schedule(message)
+
+        assert not hours
+
     def test_format_business_hours(self, handler):
         """Test formatting of business hours for display"""
         hours = {
-            "monday": {"start": "11:00 AM", "end": "10:00 PM"},
-            "tuesday": {"start": "11:00 AM", "end": "10:00 PM"},
-            "saturday": {"start": "11:00 AM", "end": "11:00 PM"}
+            "monday": {"open": "11:00", "close": "22:00"},
+            "tuesday": {"open": "11:00", "close": "22:00"},
+            "saturday": {"open": "11:00", "close": "23:00"}
         }
-        
+
         formatted = handler._format_business_hours(hours)
-        
+
         assert "Lunes" in formatted
         assert "Martes" in formatted
         assert "Sábado" in formatted
-        assert "11:00 AM" in formatted
-        assert "10:00 PM" in formatted
+        assert "11:00" in formatted
+        assert "22:00" in formatted
 
 
 class TestConfigurationPersistence:
@@ -543,10 +544,10 @@ Martes: 09:00 - 18:00"""
         ]
         
         for hours in valid_hours:
-            result = handler._parse_business_hours(hours)
-            assert result is not None
+            result = parse_weekly_schedule(hours)
+            assert result
             assert len(result) > 0
-    
+
     def test_business_hours_validation_invalid(self, handler):
         """Test validation of invalid business hours"""
         invalid_hours = [
@@ -554,9 +555,9 @@ Martes: 09:00 - 18:00"""
             "Abierto todo el día",
             "Lunes: 9 AM - 6 PM (cerrado los domingos)"
         ]
-        
+
         for hours in invalid_hours:
-            result = handler._parse_business_hours(hours)
+            result = parse_weekly_schedule(hours)
             # Some might return partial results, which is acceptable
             # The important thing is the system handles them gracefully
 
