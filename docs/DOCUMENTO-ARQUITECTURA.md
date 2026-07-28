@@ -7,7 +7,7 @@ Vendly es un asistente de ventas por WhatsApp que permite a pequeños negocios (
 ### 1.1 Tecnologías Principales
 - **Backend**: FastAPI + Python + Supabase PostgreSQL
 - **Frontend**: Next.js 16 + React 19 + TypeScript + Tailwind CSS
-- **WhatsApp**: Evolution API (Baileys) para integración con WhatsApp
+- **WhatsApp**: Meta WhatsApp Cloud API (Graph API v18.0)
 - **Base de Datos**: Supabase (PostgreSQL + Auth)
 - **Caché**: Redis (Upstash)
 - **Despliegue**: Vercel (frontend) + Render (backend)
@@ -126,11 +126,18 @@ Variables de entorno principales:
 ```python
 APP_NAME = "Vendly API"
 APP_VERSION = "0.1.0"
-SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
+SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SECRET_KEY
 UPSTASH_REDIS_URL, UPSTASH_REDIS_TOKEN
-EVOLUTION_API_URL, EVOLUTION_API_KEY
+META_WHATSAPP_PHONE_ID, META_WHATSAPP_TOKEN
+META_WHATSAPP_BUSINESS_ID, META_WEBHOOK_VERIFY_TOKEN
+LLM_PROVIDER, GEMINI_API_KEY, OPENROUTER_API_KEY
 FRONTEND_URL = "http://localhost:3000"
 ```
+
+La lista completa está en [`.env.example`](../.env.example). Las variables
+`META_WHATSAPP_*` son el fallback global: cada tenant guarda sus propias
+credenciales en `whatsapp_configs`, y los servicios las obtienen con
+`MetaWhatsAppService.for_tenant(db, tenant_id)`.
 
 ---
 
@@ -284,8 +291,9 @@ Métodos principales:
 - `send_orders_summary(...)` - Resumen de pedidos al vendedor
 - `send_stock_status(...)` - Estado del inventario
 - `send_seller_menu(...)` - Menú de opciones para vendedor
-- `send_message(...)` - Enviar mensaje vía Evolution API
-- `get_tenant_by_instance(...)` - Buscar tenant por instance_id
+- `send_message(to, message)` - Enviar mensaje vía Meta Graph API. Sincrónica y
+  bloqueante: desde código async hay que llamarla con `asyncio.to_thread`
+- `get_tenant_by_phone_number_id(...)` - Buscar tenant por `phone_number_id`
 - `get_or_create_session(...)` - Gestión de sesiones
 - `log_message(...)` - Guardar mensaje en BD
 
@@ -356,14 +364,22 @@ Uso en carrito:
 
 ### 7.3 Flujo Conexión WhatsApp
 
+No hay código QR: la Meta Cloud API se conecta con credenciales, no escaneando
+una sesión de WhatsApp Web.
+
 1. Vendedor accede a Dashboard → WhatsApp
-2. Ingresa número de teléfono
-3. POST `/api/v1/whatsapp/connect`
-4. Backend llama a Evolution API para crear instancia
-5. Evolution API genera QR code
-6. Vendedor escanea QR con WhatsApp
-7. Webhook de Evolution notifica conexión exitosa
-8. Backend guarda `instance_id` en `whatsapp_connections`
+2. Ingresa sus credenciales de Meta: `phone_number_id`, `access_token` y,
+   opcionalmente, `business_account_id` y `phone_number`
+3. POST `/api/v1/whatsapp/config`
+4. Backend verifica las credenciales contra la Graph API
+   (`MetaWhatsAppService.verify_credentials()`)
+5. Si el token es inválido o expiró → **400 y no se guarda nada**. Si hubo error
+   de red y no se pudo confirmar, se guarda con `is_connected = false`
+6. Backend guarda la fila en `whatsapp_configs` con `provider = "meta"`
+7. Para desconectar: DELETE `/api/v1/whatsapp/config`
+
+El estado de conexión se lee de `whatsapp_configs.is_connected`; la tabla
+`whatsapp_connections` se eliminó en la migración 008.
 
 ---
 
@@ -416,12 +432,16 @@ class CategoryResponse:
 ```
 SUPABASE_URL=https://slspihwznliibdecdtkj.supabase.co
 SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIs...
-SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIs...
-UPSTASH_REDIS_URL=
+SUPABASE_SECRET_KEY=eyJhbGciOiJIUzI1NiIs...
+UPSTASH_REDIS_URL=          # endpoint REST (https://), no la cadena rediss://
 UPSTASH_REDIS_TOKEN=
-EVOLUTION_API_URL=http://localhost:8080
-EVOLUTION_API_KEY=
+META_WHATSAPP_PHONE_ID=
+META_WHATSAPP_TOKEN=
+META_WHATSAPP_BUSINESS_ID=
+META_WEBHOOK_VERIFY_TOKEN=
+GEMINI_API_KEY=
 FRONTEND_URL=http://localhost:3000
+DATABASE_URL=               # solo para scripts/migrate.py, ver .env.example
 ```
 
 ### Frontend (.env.local)
@@ -474,7 +494,9 @@ docker-compose up -d  # Inicia PostgreSQL + Redis + Backend
 | /api/v1/store/{slug}/items | GET | No | Productos públicos |
 | /api/v1/cart/create | POST | No | Crear carrito |
 | /api/v1/cart/{cart_id} | GET | No | Ver carrito |
-| /api/v1/whatsapp/connect | POST | Sí | Conectar WA |
+| /api/v1/whatsapp/config | GET | Sí | Ver configuración de Meta |
+| /api/v1/whatsapp/config | POST | Sí | Guardar credenciales de Meta |
+| /api/v1/whatsapp/config | DELETE | Sí | Desconectar WhatsApp |
 | /api/v1/whatsapp/webhook | GET | No | Verificación del webhook (Meta) |
 | /api/v1/whatsapp/webhook | POST | No | Webhook Meta Cloud API |
 
@@ -486,8 +508,8 @@ docker-compose up -d  # Inicia PostgreSQL + Redis + Backend
 2. **CORS**: Configurado para permitir localhost y dominios de Vercel/Render.
 3. **Carrito Redis**: TTL de 15 minutos. Stock bloqueado temporalmente.
 4. **WhatsApp**: Meta WhatsApp Cloud API. Evolution API se eliminó en la
-   migración 008; el resto de este documento todavía la menciona en varios
-   lugares y está desactualizado en eso.
+   migración 008, junto con la tabla `whatsapp_connections` y las columnas
+   `evolution_api_*`.
 5. **Webhooks**: El webhook de Meta debe apuntar a `/api/v1/whatsapp/webhook`.
    Meta valida con un `GET` a esa misma URL antes de aceptarla.
 6. **Estados del Bot**: La sesión del bot se guarda en `conversation_sessions`.

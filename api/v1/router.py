@@ -17,7 +17,14 @@ router.include_router(dashboard.router, tags=["Dashboard"])
 router.include_router(storefront.router, tags=["Storefront (Público)"])
 router.include_router(orders.router, tags=["Orders"])
 router.include_router(whatsapp.router, prefix="/whatsapp", tags=["WhatsApp"])
-router.include_router(cart.router, tags=["Cart"])
+# cart.py declares its paths as "/create", "/{cart_id}" and so on, so without a
+# prefix they land directly under /api/v1. That made GET /api/v1/{cart_id} a
+# catch-all which, being registered before them, swallowed every single-segment
+# GET declared later: /api/v1/customers, /api/v1/post-sale-requests and
+# /api/v1/appointments all resolved to get_cart and answered 404 "Cart not found
+# or expired". The frontend was already calling /api/v1/cart/... - see
+# lib/store-service.ts - so nothing depended on the flat paths.
+router.include_router(cart.router, prefix="/cart", tags=["Cart"])
 router.include_router(customers.router, tags=["Customers"])
 router.include_router(tenants.router, tags=["Tenants"])
 router.include_router(upload.router, tags=["Upload"])

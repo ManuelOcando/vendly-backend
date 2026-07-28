@@ -68,9 +68,11 @@ SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhY
 UPSTASH_REDIS_URL=https://your-url.upstash.io
 UPSTASH_REDIS_TOKEN=your-token
 
-# WhatsApp (Evolution API)
-EVOLUTION_API_URL=http://localhost:8080
-EVOLUTION_API_KEY=your-evolution-api-key
+# WhatsApp (Meta Cloud API - obtener en developers.facebook.com)
+META_WHATSAPP_PHONE_ID=your-phone-number-id
+META_WHATSAPP_TOKEN=your-access-token
+META_WHATSAPP_BUSINESS_ID=your-waba-id
+META_WEBHOOK_VERIFY_TOKEN=vendly-webhook-secret
 
 # Frontend
 FRONTEND_URL=http://localhost:3000
@@ -329,20 +331,25 @@ Click: "Finalizar por WhatsApp"
 
 ### 5.5 FLUJO E: Procesar Pedido por WhatsApp
 
-**Prerrequisito:** Evolution API corriendo en localhost:8080
+**Prerrequisito:** una app de Meta con WhatsApp configurado y el backend
+accesible desde internet. La Meta Cloud API es un servicio alojado: no hay nada
+que levantar en local.
 
-**Paso 1: Iniciar Evolution API (si no está en Docker)**
+**Paso 1: Exponer el backend para que Meta pueda llamarlo**
 ```bash
-# Con Docker
-docker run -d \
-  --name evolution-api \
-  -p 8080:8080 \
-  -e AUTHENTICATION_API_KEY=test-key \
-  atendai/evolution-api:latest
+ngrok http 8000
 
-# Verificar
-curl http://localhost:8080
+# Configurar la URL de ngrok como Callback en
+# Meta for Developers -> tu app -> WhatsApp -> Configuration:
+#   https://abc123.ngrok.io/api/v1/whatsapp/webhook
+# Verify Token: el mismo valor que META_WEBHOOK_VERIFY_TOKEN
 ```
+
+Meta valida la URL con un `GET` antes de aceptarla, así que el backend tiene que
+estar corriendo cuando se guarda.
+
+**Alternativa sin ngrok**: simular el webhook con `curl` (ver sección 7), que
+prueba todo el flujo del bot sin depender de Meta.
 
 **Paso 2: Conectar WhatsApp (simulado para testing)**
 ```
@@ -545,10 +552,9 @@ curl -X PUT http://localhost:8000/api/v1/cart/<cart_id>/items \
   -H "Content-Type: application/json" \
   -d '{"item_id": "uuid", "quantity": 1, "price": 3.00, "name": "New Item"}'
 
-# Establecer teléfono
-curl -X PUT http://localhost:8000/api/v1/cart/<cart_id>/phone \
-  -H "Content-Type: application/json" \
-  -d '{"customer_phone": "+584123456789"}'
+# Establecer teléfono (la ruta es /customer, y el teléfono va como query
+# parameter, no en el body)
+curl -X PUT "http://localhost:8000/api/v1/cart/<cart_id>/customer?phone=%2B584123456789"
 
 # Eliminar carrito
 curl -X DELETE http://localhost:8000/api/v1/cart/<cart_id>
@@ -592,45 +598,61 @@ curl -X PUT http://localhost:8000/api/v1/dashboard/stock \
   -d '{"item_id": "uuid", "quantity": 25}'
 
 # Estado WhatsApp
-curl http://localhost:8000/api/v1/dashboard/whatsapp-status \
+curl http://localhost:8000/api/v1/dashboard/whatsapp/status \
   -H "Authorization: Bearer <token>"
 ```
 
 **WhatsApp:**
 ```bash
-# Conectar WhatsApp
-curl -X POST http://localhost:8000/api/v1/whatsapp/connect \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "store_id": "tenant-uuid",
-    "phone_number": "+584123456789",
-    "instance_name": "test-instance"
-  }'
-
-# Listar instancias
-curl http://localhost:8000/api/v1/whatsapp/instances \
+# Ver configuración
+curl http://localhost:8000/api/v1/whatsapp/config \
   -H "Authorization: Bearer <token>"
 
-# Enviar mensaje (solo backend)
-curl -X POST http://localhost:8000/api/v1/whatsapp/send \
+# Guardar credenciales de Meta (las verifica contra la Graph API antes de
+# guardar; un token inválido devuelve 400 y no persiste nada)
+curl -X POST http://localhost:8000/api/v1/whatsapp/config \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
-    "instance_id": "instance-name",
-    "to": "584123456789",
+    "phone_number_id": "123456789012345",
+    "access_token": "EAAB...",
+    "business_account_id": "987654321098765",
+    "phone_number": "584123456789"
+  }'
+
+# Enviar mensaje (usa las credenciales guardadas del tenant)
+curl -X POST http://localhost:8000/api/v1/whatsapp/send-message \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "584249876543",
     "message": "Test message"
   }'
 
-# Webhook (llamado por Evolution API)
+# Simular un webhook de Meta (así se prueba el bot sin ngrok). El tenant se
+# identifica por metadata.phone_number_id, no por el número del cliente.
 curl -X POST http://localhost:8000/api/v1/whatsapp/webhook \
   -H "Content-Type: application/json" \
-  -d '{...payload...}'
+  -d '{
+    "object": "whatsapp_business_account",
+    "entry": [{"changes": [{"field": "messages", "value": {
+      "metadata": {"phone_number_id": "123456789012345"},
+      "messages": [{
+        "from": "584249876543",
+        "id": "wamid.test-001",
+        "type": "text",
+        "text": {"body": "hola"}
+      }]
+    }}]}]
+  }'
 
 # Desconectar
-curl -X DELETE http://localhost:8000/api/v1/whatsapp/disconnect/<instance_id> \
+curl -X DELETE http://localhost:8000/api/v1/whatsapp/config \
   -H "Authorization: Bearer <token>"
 ```
+
+> El `id` del mensaje se deduplica: reenviar el mismo `wamid.test-001` se ignora.
+> Para probar dos veces, cambiar el id.
 
 ---
 
@@ -785,7 +807,8 @@ dir vendly-frontend\app\store\[slug]
 
 ### 8.7 WhatsApp Webhook no responde
 
-**Síntoma:** Evolution API no puede llamar al webhook
+**Síntoma:** Meta no puede llamar al webhook, o la verificación falla al guardar
+la Callback URL
 ```bash
 # Verificar backend está accesible
 curl http://localhost:8000/api/v1/whatsapp/webhook \
@@ -831,10 +854,11 @@ curl http://localhost:8000/api/v1/whatsapp/webhook \
 
 ### 9.4 Integraciones
 
-- [ ] Evolution API configurada
-- [ ] Webhook URL configurada
-- [ ] API keys válidas
-- [ ] Redis/Upstash configurado
+- [ ] Credenciales de Meta cargadas (`POST /api/v1/whatsapp/config` devuelve
+      `is_connected: true`)
+- [ ] Webhook URL configurada en Meta y en estado "Active"
+- [ ] Suscripción al campo `messages` activa
+- [ ] Redis/Upstash configurado (endpoint REST, no `rediss://`)
 
 ---
 
@@ -855,8 +879,9 @@ cd vendly-backend && venv\Scripts\activate && uvicorn main:app --reload --port 8
 # Terminal 2: Frontend
 cd vendly-frontend && npm run dev
 
-# Terminal 3: Evolution API (si no usas Docker)
-docker run -d -p 8080:8080 -e AUTHENTICATION_API_KEY=test-key atendai/evolution-api:latest
+# Terminal 3: túnel para los webhooks de Meta (solo si querés recibir mensajes
+# reales; para probar el bot alcanza con simular el webhook por curl)
+ngrok http 8000
 ```
 
 ### Verificar todo funciona

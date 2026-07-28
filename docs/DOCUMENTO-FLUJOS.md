@@ -48,7 +48,7 @@ El cliente navega la tienda web, agrega productos al carrito y finaliza el pedid
      │                 │               │               │                │
      │▶──────────────────────────────────────────────────────────────────▶
      │                 │               │               │                │
-     │                 │               │               │                │9. Webhook Evolution
+     │                 │               │               │                │9. Webhook de Meta
      │                 │               │               │◀───────────────▶│
      │                 │               │               │                │
      │                 │               │10. Bot procesa mensaje
@@ -278,7 +278,7 @@ El vendedor usa comandos de texto en WhatsApp para gestionar su negocio sin entr
 ### 4.3 Diagrama de Secuencia - Vendedor
 
 ```
-Vendedor        WhatsApp         Evolution        Backend        Supabase
+Vendedor        WhatsApp        Meta Cloud API    Backend        Supabase
    │               │                │               │              │
    │ 1. Envía "pedidos"            │               │              │
    │▶──────────────▶│              │               │              │
@@ -423,11 +423,49 @@ async def is_seller(self, tenant_id: str, sender: str) -> bool:
 
 ## 6. WEBHOOKS Y EVENTOS
 
-### 6.1 Webhook de Evolution API
+### 6.1 Webhook de Meta WhatsApp Cloud API
 
-**Endpoint**: `POST /api/v1/whatsapp/webhook`
+**Endpoints**:
+- `GET /api/v1/whatsapp/webhook` - verificación. Meta llama acá antes de aceptar
+  la URL y espera que se le devuelva el `hub.challenge` si el
+  `hub.verify_token` coincide con `META_WEBHOOK_VERIFY_TOKEN`.
+- `POST /api/v1/whatsapp/webhook` - mensajes entrantes.
 
-**Payload recibido**:
+**Payload recibido** (el mensaje va anidado en `entry[].changes[].value`):
+```json
+{
+  "object": "whatsapp_business_account",
+  "entry": [{
+    "changes": [{
+      "field": "messages",
+      "value": {
+        "messaging_product": "whatsapp",
+        "metadata": {
+          "display_phone_number": "584123456789",
+          "phone_number_id": "123456789012345"
+        },
+        "messages": [{
+          "from": "584249876543",
+          "id": "wamid.HBg...",
+          "timestamp": "1770000000",
+          "type": "text",
+          "text": { "body": "hola, quiero hacer un pedido" }
+        }]
+      }
+    }]
+  }]
+}
+```
+
+Dos cosas que el handler hace con esto:
+
+- **Identifica al tenant por `metadata.phone_number_id`**, buscándolo en
+  `whatsapp_configs`. No por el número del cliente.
+- **Deduplica por `messages[].id`**: Meta reintenta el webhook si no recibe un
+  200 a tiempo, y sin esto el bot procesaría el mismo pedido dos veces.
+
+**Payload heredado de Evolution API** (ya no se recibe; se documenta solo para
+reconocerlo si aparece en logs viejos):
 ```json
 {
   "key": {
@@ -446,12 +484,14 @@ async def is_seller(self, tenant_id: str, sender: str) -> bool:
 }
 ```
 
-**Procesamiento**:
-1. Extraer `sender` (número de teléfono)
-2. Extraer `message.conversation` (texto del mensaje)
-3. Extraer `instance` (nombre de instancia)
-4. Buscar tenant por instance_id
-5. Delegar a `WhatsAppBotService.process_message()`
+**Procesamiento** (`api/v1/whatsapp.py`, `POST /webhook`):
+1. Recorrer `entry[].changes[].value` y quedarse con los que traen `messages`
+2. De cada mensaje: `from` (teléfono del cliente), `text.body` (texto) e `id`
+3. Descartar el mensaje si ese `id` ya se procesó (Meta reintenta)
+4. Leer `value.metadata.phone_number_id` y buscar el tenant en
+   `whatsapp_configs`
+5. Delegar a `MetaWhatsAppBotService.process_message(tenant_id, phone, message,
+   phone_number_id)`
 
 ### 6.2 Eventos del Sistema
 
@@ -512,20 +552,23 @@ Los mensajes del bot pueden incluir variables:
 
 ## 8. INTEGRACIONES EXTERNAS
 
-### 8.1 Evolution API
+### 8.1 Meta WhatsApp Cloud API
 
-**Instalación local**:
-```bash
-docker run -d \
-  --name evolution-api \
-  -p 8080:8080 \
-  -e AUTHENTICATION_API_KEY=your_key \
-  atendai/evolution-api:latest
-```
+Es un servicio alojado por Meta: no hay nada que instalar ni levantar en Docker.
+Para recibir webhooks en local hace falta exponer el puerto con ngrok (ver
+`docs/DOCUMENTO-TESTING.md`).
 
-**Endpoints usados**:
-- `POST /instance/create` - Crear instancia
-- `POST /message/sendText/{instance}` - Enviar mensaje
+**Base**: `https://graph.facebook.com/v18.0`
+
+**Endpoints usados** (`services/whatsapp/meta_service.py`):
+- `GET /me` - verificar credenciales (`verify_credentials()`)
+- `POST /{phone_number_id}/messages` - enviar mensaje (`send_message(to, message)`)
+
+**Credenciales**: cada tenant guarda su `phone_number_id` y `access_token` en
+`whatsapp_configs`. Los servicios las obtienen con
+`MetaWhatsAppService.for_tenant(db, tenant_id)`, que devuelve `None` si el tenant
+no tiene una configuración usable — construir el servicio sin argumentos cae a
+las variables globales `META_WHATSAPP_*` y mandaría desde el número equivocado.
 - `GET /instance/fetchInstances` - Listar instancias
 - `DELETE /instance/logout/{instance}` - Desconectar
 
@@ -575,12 +618,23 @@ docker run -d \
 
 ### 9.4 WhatsApp Desconectado
 
-**Escenario**: Vendedor pierde conexión de WhatsApp.
+**Escenario**: las credenciales de Meta del vendedor dejan de funcionar, casi
+siempre por un `access_token` expirado.
+
+A diferencia de Evolution API, **Meta no envía un evento de desconexión**: no hay
+una sesión que se caiga. El problema aparece cuando un envío falla.
+
 **Solución**:
-- Evolution API envía webhook de desconexión
-- Backend actualiza `whatsapp_connections.status` a `disconnected`
-- Dashboard muestra alerta al vendedor
-- Clientes ven mensaje: "Estamos fuera de línea, te responderemos pronto"
+- `send_message` devuelve `{"status": "failed", "error": ...}` con el mensaje de
+  Meta, que queda logueado en ERROR
+- `whatsapp_configs.is_connected` refleja el último resultado de
+  `verify_credentials()`, que corre al guardar la configuración
+- `GET /api/v1/dashboard/whatsapp/status` y el dashboard leen ese campo
+- El vendedor vuelve a cargar sus credenciales en Dashboard → WhatsApp
+
+Aparte de esto existe el **modo offline** (`offline_mode_service`), que es otra
+cosa: cubre las horas en que el negocio está cerrado, guarda los mensajes en
+`offline_messages` y responde "Estamos fuera de línea, te responderemos pronto".
 
 ---
 
