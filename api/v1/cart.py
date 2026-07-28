@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import uuid
 import json
 
-from db.redis import get_redis_client
+from db.redis import RedisError, get_redis_client
 
 router = APIRouter()
 
@@ -72,7 +72,12 @@ async def create_cart(request: CreateCartRequest):
             "expires_at": cart.expires_at.isoformat(),
             "message": "Cart created successfully"
         }
-        
+
+    except RedisError as e:
+        # Sin esto el endpoint devolvía 200 con un cart_id que no se había
+        # guardado en ninguna parte, y el cliente descubría el problema recién
+        # al ir a buscar el carrito.
+        raise HTTPException(status_code=503, detail=f"El carrito no pudo guardarse: {e}") from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -100,6 +105,11 @@ async def get_cart(cart_id: str):
         
     except HTTPException:
         raise
+    except RedisError as e:
+        # 503, no 404: el carrito puede existir perfectamente y ser Redis el
+        # que no contesta. Confundir las dos cosas es lo que hizo que este
+        # flujo estuviera roto en silencio.
+        raise HTTPException(status_code=503, detail=f"Almacén de carritos no disponible: {e}") from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -158,6 +168,11 @@ async def add_to_cart(cart_id: str, request: AddItemRequest):
         
     except HTTPException:
         raise
+    except RedisError as e:
+        # 503, no 404: el carrito puede existir perfectamente y ser Redis el
+        # que no contesta. Confundir las dos cosas es lo que hizo que este
+        # flujo estuviera roto en silencio.
+        raise HTTPException(status_code=503, detail=f"Almacén de carritos no disponible: {e}") from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -180,6 +195,11 @@ async def set_customer_phone(cart_id: str, phone: str):
         
     except HTTPException:
         raise
+    except RedisError as e:
+        # 503, no 404: el carrito puede existir perfectamente y ser Redis el
+        # que no contesta. Confundir las dos cosas es lo que hizo que este
+        # flujo estuviera roto en silencio.
+        raise HTTPException(status_code=503, detail=f"Almacén de carritos no disponible: {e}") from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -244,5 +264,10 @@ async def get_cart_stock_status(cart_id: str):
         
     except HTTPException:
         raise
+    except RedisError as e:
+        # 503, no 404: el carrito puede existir perfectamente y ser Redis el
+        # que no contesta. Confundir las dos cosas es lo que hizo que este
+        # flujo estuviera roto en silencio.
+        raise HTTPException(status_code=503, detail=f"Almacén de carritos no disponible: {e}") from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
