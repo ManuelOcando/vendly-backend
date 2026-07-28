@@ -157,7 +157,17 @@ class TestCompleteCustomerJourney:
         assert orders[0]["customer_phone"] == CUSTOMER_PHONE
         assert orders[0]["total"] == 20.0
         assert orders[0]["status"] == "payment_pending"
-        assert orders[0]["items"][0]["name"] == "Hamburguesa"
+
+        # The line items land in order_items. This used to assert
+        # orders[0]["items"], a column that does not exist - the fake ignored
+        # column names, so the test passed while PostgREST rejected the insert
+        # and confirming an order always failed in production.
+        line_items = journey.fake.rows("order_items")
+        assert len(line_items) == 1
+        assert line_items[0]["order_id"] == orders[0]["id"]
+        assert line_items[0]["item_name"] == "Hamburguesa"
+        assert line_items[0]["quantity"] == 2
+        assert line_items[0]["subtotal"] == 20.0
 
         # ...and the session followed the order
         assert journey.session()["current_state"] == "payment_pending"

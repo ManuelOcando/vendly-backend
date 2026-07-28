@@ -524,21 +524,47 @@ class CartConfirmationHandler(BaseWhatsAppHandler):
             if not cart:
                 return t("cart.expired_simple", language)
             
-            # Create order in database
+            # Create order in database. `orders` has neither an `items` column
+            # nor a `source` one - the line items belong in order_items, and
+            # PostgREST rejected the whole insert over those two names, so
+            # confirming an order from WhatsApp always failed and answered with
+            # the generic error message.
             order_data = {
                 "tenant_id": tenant_id,
                 "customer_phone": phone,
                 "total": cart["total"],
+                "subtotal": cart["total"],
                 "status": "payment_pending",
-                "source": "whatsapp",
-                "items": cart["items"]
             }
-            
+
             order_result = self.db.table("orders").insert(order_data).execute()
             order = order_result.data[0] if order_result.data else None
 
             if not order:
                 return t("order.process_error", language)
+
+            # Line items, in the table that has columns for them. Logged rather
+            # than raised: the order row is already committed, so failing here
+            # would tell the customer their order did not go through when it
+            # did, and the seller notification below still lists the products.
+            try:
+                self.db.table("order_items").insert([
+                    {
+                        "tenant_id": tenant_id,
+                        "order_id": order["id"],
+                        "item_id": item.get("item_id"),
+                        "item_name": item.get("name"),
+                        "quantity": item.get("quantity", 1),
+                        "unit_price": item.get("price", 0),
+                        "subtotal": (item.get("price", 0) or 0) * (item.get("quantity", 1) or 1),
+                    }
+                    for item in cart["items"]
+                ]).execute()
+            except Exception as items_err:
+                logger.error(
+                    f"Could not record order_items for order {order['id']}: {items_err}",
+                    exc_info=True,
+                )
 
             # Record purchase history so future recommendations can be
             # personalized for this customer. Never blocks order confirmation.

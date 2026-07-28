@@ -21,9 +21,103 @@ modules import it by name, binding it in their own namespace at import time.
 Only the query-builder subset the production code actually uses is
 implemented. Anything else raises, so an unsupported call fails loudly
 instead of silently returning nothing.
+
+Column names are checked against `db/expected_schema.py`, which is generated
+from the real database. That check is the reason this file matters beyond
+multi-turn state: it used to ignore the column list entirely, so a query could
+be structurally valid and semantically impossible and every test would still
+pass. An audit on 2026-07-27 found 41 queries like that - `select("count")`,
+`orders.total_amount`, `categories.order` - each one wrapped in a try/except
+that turned the resulting error into a feature that quietly did nothing. Two
+tests had even encoded the broken shapes in their mocks.
 """
 from typing import Any, Dict, List, Optional
+import re
 import uuid
+
+from db.expected_schema import EXPECTED_SCHEMA
+
+
+class SchemaError(AssertionError):
+    """A query named something the database does not have.
+
+    An AssertionError so it reads as a test failure rather than a bug in the
+    fake, which is what it is: production code asking for a column that is not
+    there.
+    """
+
+
+# `count`, `sum(x)`, `avg(x)`: PostgREST resolves these to column names and
+# Postgres answers 42703. The aggregate spelling is `count()` / `col.sum()`.
+_AGGREGATES = {"count", "sum", "avg", "min", "max"}
+_AGGREGATE_CALL = re.compile(r"^(count|sum|avg|min|max)\s*\(")
+
+# items(name, price) is an embedded resource - a join - not a column of this
+# table, so it is not checked here.
+_EMBEDDED = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\s*\(")
+
+
+def _split_columns(spec: str) -> List[str]:
+    """Split a select list on commas that are not inside parentheses.
+
+    A plain spec.split(",") tears `items(name, price)` into `items(name` and
+    `price)`, and then reports `price)` as an unknown column.
+    """
+    parts, depth, current = [], 0, []
+    for char in spec:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        if char == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    parts.append("".join(current))
+    return parts
+
+
+def _check_columns(table: str, columns, where: str) -> None:
+    """Raise if any of these names is not a column of `table`.
+
+    Tables absent from EXPECTED_SCHEMA are skipped rather than rejected: a test
+    is free to invent a table for a fixture, and failing on that would make the
+    fake harder to use without catching anything real.
+    """
+    known = EXPECTED_SCHEMA.get(table)
+    if known is None:
+        return
+
+    unknown = []
+    for column in columns:
+        column = column.strip()
+        if not column or column == "*":
+            continue
+        if _AGGREGATE_CALL.match(column):
+            raise SchemaError(
+                f'{table}: "{column}" in {where} is not supported by PostgREST - '
+                f"it reads as a column name and Postgres answers 42703. "
+                f"Fetch the rows and aggregate in Python."
+            )
+        if column in _AGGREGATES:
+            raise SchemaError(
+                f'{table}: "{column}" in {where} is read as a column name, not an '
+                f"aggregate, and Postgres answers 42703. To count rows, select a "
+                f"real column and use len(result.data)."
+            )
+        if _EMBEDDED.match(column):
+            continue
+        if column not in known:
+            unknown.append(column)
+
+    if unknown:
+        raise SchemaError(
+            f"{table}: no column {', '.join(sorted(unknown))} (in {where}). "
+            f"PostgREST rejects the whole query over one unknown column. "
+            f"If the column is new, apply the migration and regenerate with "
+            f"`python scripts/audit_schema_usage.py --emit-schema`."
+        )
 
 
 class _Result:
@@ -48,21 +142,30 @@ class _Query:
 
     # -- operations --------------------------------------------------------
 
-    def select(self, *_columns, **_kwargs):
-        # Column projection is ignored on purpose: callers only ever read
-        # keys they asked for, and returning whole rows keeps the fake
-        # simple without changing any assertion.
+    def select(self, *columns, **_kwargs):
+        # Whole rows are still returned - callers only read the keys they asked
+        # for, and projecting would change no assertion. The names are validated
+        # though, which is the part that used to be missing: PostgREST rejects
+        # the entire query over one unknown column, and ignoring that here let
+        # impossible queries pass the suite for months.
         self._operation = "select"
+        for group in columns:
+            if isinstance(group, str):
+                _check_columns(self._table, _split_columns(group), "select()")
         return self
 
-    def insert(self, payload: Dict[str, Any]):
+    def insert(self, payload):
+        """Accepts a single row or a list of them, as supabase-py does."""
         self._operation = "insert"
         self._payload = payload
+        for row in payload if isinstance(payload, list) else [payload]:
+            _check_columns(self._table, row.keys(), "insert()")
         return self
 
     def update(self, payload: Dict[str, Any]):
         self._operation = "update"
         self._payload = payload
+        _check_columns(self._table, payload.keys(), "update()")
         return self
 
     def delete(self):
@@ -71,40 +174,38 @@ class _Query:
 
     # -- filters -----------------------------------------------------------
 
-    def eq(self, column: str, value: Any):
-        self._filters.append((column, "eq", value))
+    def _filter(self, column: str, op: str, value: Any):
+        _check_columns(self._table, [column], f".{op}()")
+        self._filters.append((column, op, value))
         return self
+
+    def eq(self, column: str, value: Any):
+        return self._filter(column, "eq", value)
 
     def neq(self, column: str, value: Any):
-        self._filters.append((column, "neq", value))
-        return self
+        return self._filter(column, "neq", value)
 
     def gte(self, column: str, value: Any):
-        self._filters.append((column, "gte", value))
-        return self
+        return self._filter(column, "gte", value)
 
     def lte(self, column: str, value: Any):
-        self._filters.append((column, "lte", value))
-        return self
+        return self._filter(column, "lte", value)
 
     def lt(self, column: str, value: Any):
-        self._filters.append((column, "lt", value))
-        return self
+        return self._filter(column, "lt", value)
 
     def gt(self, column: str, value: Any):
-        self._filters.append((column, "gt", value))
-        return self
+        return self._filter(column, "gt", value)
 
     def is_(self, column: str, value: Any):
         # supabase spells SQL NULL as the string "null"
-        self._filters.append((column, "is", None if value == "null" else value))
-        return self
+        return self._filter(column, "is", None if value == "null" else value)
 
     def in_(self, column: str, values: List[Any]):
-        self._filters.append((column, "in", list(values)))
-        return self
+        return self._filter(column, "in", list(values))
 
     def order(self, column: str, desc: bool = False, **_kwargs):
+        _check_columns(self._table, [column], "order()")
         self._order = (column, desc)
         return self
 
@@ -150,10 +251,14 @@ class _Query:
         rows = self._rows()
 
         if self._operation == "insert":
-            created = dict(self._payload)
-            created.setdefault("id", str(uuid.uuid4()))
-            rows.append(created)
-            return _Result([dict(created)])
+            payload = self._payload if isinstance(self._payload, list) else [self._payload]
+            created_rows = []
+            for row in payload:
+                created = dict(row)
+                created.setdefault("id", str(uuid.uuid4()))
+                rows.append(created)
+                created_rows.append(dict(created))
+            return _Result(created_rows)
 
         matching = [row for row in rows if self._matches(row)]
 

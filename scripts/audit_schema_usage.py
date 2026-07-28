@@ -50,6 +50,9 @@ except ImportError:
 BACKEND_ROOT = Path(__file__).parent.parent
 SKIP_DIRS = {".git", "venv", ".venv", "__pycache__", "node_modules"}
 
+# Files whose whole purpose is to contain queries this script should hate.
+SKIP_FILES = {"tests/test_fake_supabase_schema.py"}
+
 # `.table("orders")` and `.table(table_name)` alike. Group 1 is set only for a
 # literal; a variable leaves it None and the chain is still checked for the
 # things that are wrong regardless of which table it hits. An earlier version
@@ -161,6 +164,8 @@ def python_files() -> list:
         if any(part in SKIP_DIRS for part in path.parts):
             continue
         if path.resolve() == here:
+            continue
+        if path.relative_to(BACKEND_ROOT).as_posix() in SKIP_FILES:
             continue
         found.append(path)
     return sorted(found)
