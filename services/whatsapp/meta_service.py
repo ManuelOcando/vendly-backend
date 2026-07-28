@@ -15,6 +15,48 @@ class MetaWhatsAppService:
     
     BASE_URL = "https://graph.facebook.com/v18.0"
     
+    @classmethod
+    def for_tenant(cls, db, tenant_id: str) -> Optional["MetaWhatsAppService"]:
+        """This tenant's own Meta credentials, or None if it has none usable.
+
+        Constructing MetaWhatsAppService() with no arguments falls back to the
+        META_WHATSAPP_* environment variables, which in a multi-tenant backend
+        means sending every message from one tenant's number. Returning None here
+        instead is deliberate: not sending is better than sending from the wrong
+        business.
+
+        `db` is passed in rather than fetched so callers share their client and
+        tests can hand over a fake.
+        """
+        try:
+            result = db.table("whatsapp_configs").select(
+                "phone_number_id, access_token"
+            ).eq("tenant_id", tenant_id).limit(1).execute()
+        except Exception as e:
+            logger.error(
+                "Could not read WhatsApp credentials for tenant %s: %s",
+                tenant_id, e, exc_info=True,
+            )
+            return None
+
+        if not result.data:
+            logger.error("Tenant %s has no whatsapp_configs row", tenant_id)
+            return None
+
+        config = result.data[0]
+        phone_number_id = config.get("phone_number_id")
+        access_token = config.get("access_token")
+
+        if not phone_number_id or not access_token:
+            logger.error(
+                "Tenant %s has an incomplete WhatsApp config "
+                "(phone_number_id=%s, access_token=%s)",
+                tenant_id, bool(phone_number_id), bool(access_token),
+            )
+            return None
+
+        return cls(phone_number_id=phone_number_id, access_token=access_token)
+
     def __init__(self, phone_number_id: str = None, access_token: str = None):
         self.phone_number_id = phone_number_id or os.getenv("META_WHATSAPP_PHONE_ID")
         self.access_token = access_token or os.getenv("META_WHATSAPP_TOKEN")

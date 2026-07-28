@@ -94,15 +94,24 @@ class RemarketingService:
         # WhatsApp service for sending messages
         self.whatsapp_service = None
     
-    def _get_whatsapp_service(self) -> Any:
-        """Get WhatsApp service instance"""
-        if self.whatsapp_service is None:
-            try:
-                from services.whatsapp.meta_service import MetaWhatsAppService
-                self.whatsapp_service = MetaWhatsAppService()
-            except ImportError:
-                logger.warning("WhatsApp service not available")
-        return self.whatsapp_service
+    def _get_whatsapp_service(self, tenant_id: str) -> Any:
+        """WhatsApp service carrying this tenant's credentials.
+
+        Built per tenant and not cached. It used to be a single
+        MetaWhatsAppService() with no arguments, cached for the life of the
+        service, which falls back to the global META_WHATSAPP_* variables - so
+        every remarketing message would have gone out from one tenant's number
+        regardless of who it was for.
+
+        `self.whatsapp_service`, when set, wins. That is the injection point for
+        tests and for a caller that already built one.
+        """
+        if self.whatsapp_service is not None:
+            return self.whatsapp_service
+
+        from services.whatsapp.meta_service import MetaWhatsAppService
+
+        return MetaWhatsAppService.for_tenant(self.db, tenant_id)
     
     async def check_inactivity_reminders(self, tenant_id: str) -> List[InactivityReminder]:
         """
@@ -189,7 +198,7 @@ class RemarketingService:
             )
             
             # Send via WhatsApp
-            whatsapp = self._get_whatsapp_service()
+            whatsapp = self._get_whatsapp_service(tenant_id)
             if whatsapp:
                 # send_message is synchronous and blocking; awaiting its dict
                 # raised TypeError, so no remarketing message was ever sent.
@@ -313,7 +322,7 @@ class RemarketingService:
             )
             
             # Send via WhatsApp
-            whatsapp = self._get_whatsapp_service()
+            whatsapp = self._get_whatsapp_service(tenant_id)
             if whatsapp:
                 # send_message is synchronous and blocking; awaiting its dict
                 # raised TypeError, so no remarketing message was ever sent.
@@ -421,7 +430,7 @@ class RemarketingService:
             )
             
             # Send via WhatsApp
-            whatsapp = self._get_whatsapp_service()
+            whatsapp = self._get_whatsapp_service(tenant_id)
             if whatsapp:
                 # send_message is synchronous and blocking; awaiting its dict
                 # raised TypeError, so no remarketing message was ever sent.
