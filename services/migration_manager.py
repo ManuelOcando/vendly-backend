@@ -123,7 +123,7 @@ class MigrationManager:
             
             # Count products
             products_result = self.db.table("items").select(
-                "count", count="exact"
+                "id", count="exact"
             ).eq("tenant_id", tenant_id).execute()
             products_count = products_result.count or 0
             data_summary["products"] = products_count
@@ -139,7 +139,7 @@ class MigrationManager:
             
             # Count orders
             orders_result = self.db.table("orders").select(
-                "count", count="exact"
+                "id", count="exact"
             ).eq("tenant_id", tenant_id).execute()
             orders_count = orders_result.count or 0
             data_summary["orders"] = orders_count
@@ -147,7 +147,7 @@ class MigrationManager:
             
             # Check for products without categories
             if products_count > 0:
-                products_no_category = self.db.table("items").select("count", count="exact").eq(
+                products_no_category = self.db.table("items").select("id", count="exact").eq(
                     "tenant_id", tenant_id
                 ).is_("category_id", "null").execute()
                 
@@ -156,7 +156,7 @@ class MigrationManager:
             
             # Check for orders without items
             if orders_count > 0:
-                orders_no_items = self.db.table("orders").select("count", count="exact").eq(
+                orders_no_items = self.db.table("orders").select("id", count="exact").eq(
                     "tenant_id", tenant_id
                 ).execute()
                 
@@ -327,8 +327,8 @@ class MigrationManager:
         try:
             # Get distinct customers from orders
             orders_result = self.db.table("orders").select(
-                "customer_phone", 
-                "total_amount",
+                "customer_phone",
+                "total",
                 "created_at"
             ).eq("tenant_id", source_tenant_id).order(
                 "created_at", desc=True
@@ -348,7 +348,7 @@ class MigrationManager:
                     }
                 
                 if phone:
-                    customer_data[phone]["total_spent"] += float(order.get("total_amount", 0))
+                    customer_data[phone]["total_spent"] += float(order.get("total") or 0)
                     order_date = order.get("created_at")
                     if order_date:
                         if customer_data[phone]["last_purchase_date"] is None or \
@@ -411,8 +411,11 @@ class MigrationManager:
         """Migrate order data to purchase_history table"""
         try:
             # Get all orders with items
+            # The column is `total`; orders has no total_amount. PostgREST
+            # rejects the whole select over one unknown column, so this raised
+            # before the loop below ever ran.
             orders_result = self.db.table("orders").select(
-                "id, customer_phone, total_amount, created_at"
+                "id, customer_phone, total, created_at"
             ).eq("tenant_id", source_tenant_id).order(
                 "created_at", desc=True
             ).limit(1000).execute()
@@ -427,7 +430,7 @@ class MigrationManager:
                 try:
                     order_id = order.get("id")
                     customer_phone = order.get("customer_phone")
-                    total_amount = float(order.get("total_amount", 0))
+                    total_amount = float(order.get("total") or 0)
                     created_at = order.get("created_at")
                     
                     if not customer_phone:
@@ -647,18 +650,18 @@ class MigrationManager:
             source_customer_count = len(source_customers.data) if source_customers.data else 0
             
             source_orders = self.db.table("orders").select(
-                "count", count="exact"
+                "id", count="exact"
             ).eq("tenant_id", source_tenant_id).execute()
             source_order_count = source_orders.count or 0
             
             # Count target data
             target_customers = self.db.table("customer_profiles").select(
-                "count", count="exact"
+                "id", count="exact"
             ).eq("tenant_id", target_tenant_id).execute()
             target_customer_count = target_customers.count or 0
             
             target_purchases = self.db.table("purchase_history").select(
-                "count", count="exact"
+                "id", count="exact"
             ).eq("tenant_id", target_tenant_id).execute()
             target_purchase_count = target_purchases.count or 0
             

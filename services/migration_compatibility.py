@@ -181,7 +181,7 @@ class MigrationCompatibilityChecker:
             for table_name, feature in tables_to_check:
                 try:
                     result = self.db.table(table_name).select(
-                        "count", count="exact"
+                        "id", count="exact"
                     ).eq("tenant_id", tenant_id).execute()
                     
                     api_versions[table_name] = "v1"
@@ -196,7 +196,7 @@ class MigrationCompatibilityChecker:
             for table_name in new_tables:
                 try:
                     result = self.db.table(table_name).select(
-                        "count", count="exact"
+                        "id", count="exact"
                     ).limit(1).execute()
                     api_versions[table_name] = "v2"
                 except Exception as e:
@@ -321,7 +321,7 @@ class MigrationCompatibilityChecker:
             # Check for orders without customer phone (will be skipped in migration)
             try:
                 orders_no_phone = self.db.table("orders").select(
-                    "count", count="exact"
+                    "id", count="exact"
                 ).eq("tenant_id", tenant_id).is_("customer_phone", "null").execute()
                 
                 if orders_no_phone.count and orders_no_phone.count > 0:
@@ -337,7 +337,7 @@ class MigrationCompatibilityChecker:
             # Check for items without category (warning)
             try:
                 items_no_category = self.db.table("items").select(
-                    "count", count="exact"
+                    "id", count="exact"
                 ).eq("tenant_id", tenant_id).is_("category_id", "null").execute()
                 
                 if items_no_category.count and items_no_category.count > 0:
@@ -476,7 +476,7 @@ class MigrationCompatibilityChecker:
             if result.data is not None:
                 # Check if tenant has any profiles
                 count_result = self.db.table("customer_profiles").select(
-                    "count", count="exact"
+                    "id", count="exact"
                 ).eq("tenant_id", tenant_id).execute()
                 
                 if count_result.count and count_result.count > 0:
@@ -493,7 +493,7 @@ class MigrationCompatibilityChecker:
             result = self.db.table("purchase_history").select("id").limit(1).execute()
             if result.data is not None:
                 count_result = self.db.table("purchase_history").select(
-                    "count", count="exact"
+                    "id", count="exact"
                 ).eq("tenant_id", tenant_id).execute()
                 
                 if count_result.count and count_result.count > 0:
@@ -510,7 +510,7 @@ class MigrationCompatibilityChecker:
             result = self.db.table("loyalty_points").select("id").limit(1).execute()
             if result.data is not None:
                 count_result = self.db.table("loyalty_points").select(
-                    "count", count="exact"
+                    "id", count="exact"
                 ).eq("tenant_id", tenant_id).execute()
                 
                 if count_result.count and count_result.count > 0:
@@ -527,7 +527,7 @@ class MigrationCompatibilityChecker:
             result = self.db.table("loyalty_rewards").select("id").limit(1).execute()
             if result.data is not None:
                 count_result = self.db.table("loyalty_rewards").select(
-                    "count", count="exact"
+                    "id", count="exact"
                 ).eq("tenant_id", tenant_id).execute()
                 
                 if count_result.count and count_result.count > 0:
@@ -544,7 +544,7 @@ class MigrationCompatibilityChecker:
         try:
             # Check for recommendation data or RPC functions
             result = self.db.table("purchase_history").select(
-                "count", count="exact"
+                "id", count="exact"
             ).eq("tenant_id", tenant_id).execute()
             
             if result.count and result.count >= 10:  # Need enough data
@@ -561,7 +561,7 @@ class MigrationCompatibilityChecker:
         try:
             # Check for orders to analyze
             result = self.db.table("orders").select(
-                "count", count="exact"
+                "id", count="exact"
             ).eq("tenant_id", tenant_id).execute()
             
             if result.count and result.count >= 10:
