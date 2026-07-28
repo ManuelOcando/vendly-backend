@@ -3,6 +3,7 @@ Conversational Dashboard for Vendly Pro
 Implements WhatsApp-based interface for business owners with smart alerts system
 """
 from typing import Dict, Any, Optional, List
+from collections import Counter
 import logging
 import re
 from datetime import datetime, timedelta, date
@@ -973,23 +974,28 @@ Usa "alertas" para ver alertas activas."""
     async def _get_frequent_questions(self, tenant_id: str) -> str:
         """Get most frequent customer questions"""
         try:
-            # Get frequent questions from conversation analytics
+            # Counted here rather than in the query. This used to ask for
+            # "topic, COUNT(*) as count" with .group_by("topic"), but the
+            # Supabase query builder has no group_by - it raised AttributeError
+            # on every call, so this panel never showed anything.
             result = self.db.table("conversation_analytics").select(
-                "topic, COUNT(*) as count"
-            ).eq("tenant_id", tenant_id).not_.eq("topic", None).group_by(
                 "topic"
-            ).order("count", desc=True).limit(5).execute()
-            
-            if not result.data:
+            ).eq("tenant_id", tenant_id).execute()
+
+            counts = Counter(
+                row["topic"]
+                for row in (result.data or [])
+                if row.get("topic")
+            )
+
+            if not counts:
                 return "No hay datos de preguntas frecuentes aún."
-            
+
             message = "❓ *Preguntas Frecuentes de Clientes:*\n\n"
-            
-            for i, item in enumerate(result.data, 1):
-                topic = item["topic"] or "Sin tema"
-                count = item["count"]
+
+            for i, (topic, count) in enumerate(counts.most_common(5), 1):
                 message += f"{i}. {topic}: {count} veces\n"
-            
+
             message += "\nUsa 'analytics' para ver más detalles."
             return message
             

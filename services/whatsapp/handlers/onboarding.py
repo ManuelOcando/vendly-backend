@@ -554,7 +554,7 @@ Escribe "configurar" para comenzar."""
                 category_result = self.db.table("categories").insert({
                     "tenant_id": tenant_id,
                     "name": product_info.get("category", "Sin categoría"),
-                    "order": 99,
+                    "sort_order": 99,
                     "is_active": True
                 }).execute()
                 if category_result.data:

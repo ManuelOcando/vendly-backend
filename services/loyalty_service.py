@@ -677,43 +677,47 @@ class LoyaltyService:
             LoyaltyProgramSummary object
         """
         try:
-            # Get total customers with loyalty accounts
+            # Every metric below except active_customers comes from the same set
+            # of rows, so they are fetched once and aggregated in Python.
+            #
+            # This used to ask PostgREST for "count", "sum(points_earned_total)"
+            # and .group("tier"). None of that exists: count and sum(...) are
+            # read as column names and rejected with 42703, and the real client
+            # has no .group(). Every call raised, so the whole summary was dead.
             result = self.db.table("loyalty_points").select(
-                "count", "points_balance", "tier"
+                "points_balance, tier, points_earned_total, points_redeemed_total"
             ).eq("tenant_id", tenant_id).execute()
-            
-            total_customers = len(result.data) if result.data else 0
-            
-            # Calculate active customers (activity in last 30 days)
+
+            rows = result.data or []
+            total_customers = len(rows)
+
+            total_points_issued = sum(int(row.get("points_earned_total") or 0) for row in rows)
+            total_points_redeemed = sum(int(row.get("points_redeemed_total") or 0) for row in rows)
+
+            tier_distribution = {}
+            for row in rows:
+                tier = row.get("tier")
+                tier_distribution[tier] = tier_distribution.get(tier, 0) + 1
+
+            # Active customers stays a separate query so the date comparison
+            # happens in Postgres rather than on ISO strings here.
             thirty_days_ago = (datetime.now() - timedelta(days=30)).isoformat()
-            active_result = self.db.table("loyalty_points").select("count").eq(
+            active_result = self.db.table("loyalty_points").select("id").eq(
                 "tenant_id", tenant_id
             ).gte("last_activity_date", thirty_days_ago).execute()
-            
-            active_customers = active_result.count if hasattr(active_result, 'count') else 0
-            
-            # Calculate total points issued and redeemed
-            points_result = self.db.table("loyalty_points").select(
-                "sum(points_earned_total)", "sum(points_redeemed_total)"
-            ).eq("tenant_id", tenant_id).execute()
-            
-            total_points_issued = 0
-            total_points_redeemed = 0
-            
-            if points_result.data and points_result.data[0]:
-                total_points_issued = points_result.data[0].get("sum", 0) or 0
-                total_points_redeemed = points_result.data[0].get("sum_1", 0) or 0
-            
+
+            active_customers = len(active_result.data or [])
+
             # Calculate redemption rate
             redemption_rate = 0.0
             if total_points_issued > 0:
                 redemption_rate = total_points_redeemed / total_points_issued
-            
+
             # Get top rewards
             rewards_result = self.db.table("loyalty_rewards").select("*").eq(
                 "tenant_id", tenant_id
             ).eq("is_active", True).order("points_required", desc=False).limit(5).execute()
-            
+
             top_rewards = []
             if rewards_result.data:
                 for reward in rewards_result.data:
@@ -723,17 +727,7 @@ class LoyaltyService:
                         "points_required": reward.get("points_required"),
                         "reward_type": reward.get("reward_type")
                     })
-            
-            # Get tier distribution
-            tier_result = self.db.table("loyalty_points").select(
-                "tier", "count"
-            ).eq("tenant_id", tenant_id).group("tier").execute()
-            
-            tier_distribution = {}
-            if tier_result.data:
-                for item in tier_result.data:
-                    tier_distribution[item.get("tier")] = item.get("count", 0)
-            
+
             return LoyaltyProgramSummary(
                 total_customers=total_customers,
                 active_customers=active_customers,
@@ -1522,14 +1516,18 @@ class LoyaltyService:
                         start_of_year = datetime(year, 1, 1).isoformat()
                         end_of_year = datetime(year, 12, 31, 23, 59, 59).isoformat()
                         
-                        log_check = self.db.table("distribution_logs").select("count").eq(
+                        log_check = self.db.table("distribution_logs").select("id").eq(
                             "tenant_id", tenant_id
                         ).eq("rule_id", rule["id"]).eq("customer_phone", customer_phone).gte(
                             "distributed_at", start_of_year
                         ).lte("distributed_at", end_of_year).execute()
                         
                         # Check max distributions per customer
-                        if rule_response.max_distributions_per_customer and log_check.count >= rule_response.max_distributions_per_customer:
+                        # len(data), not .count: PostgREST only fills the count
+                        # attribute when the request asks for it, so this was
+                        # comparing None against an int.
+                        distributions_so_far = len(log_check.data or [])
+                        if rule_response.max_distributions_per_customer and distributions_so_far >= rule_response.max_distributions_per_customer:
                             logger.info(f"Customer {customer_phone} already reached max distributions for rule {rule['id']}")
                             continue
                         
@@ -1651,14 +1649,18 @@ class LoyaltyService:
                         start_of_year = datetime(year, 1, 1).isoformat()
                         end_of_year = datetime(year, 12, 31, 23, 59, 59).isoformat()
                         
-                        log_check = self.db.table("distribution_logs").select("count").eq(
+                        log_check = self.db.table("distribution_logs").select("id").eq(
                             "tenant_id", tenant_id
                         ).eq("rule_id", rule["id"]).eq("customer_phone", customer_phone).gte(
                             "distributed_at", start_of_year
                         ).lte("distributed_at", end_of_year).execute()
                         
                         # Check max distributions per customer
-                        if rule_response.max_distributions_per_customer and log_check.count >= rule_response.max_distributions_per_customer:
+                        # len(data), not .count: PostgREST only fills the count
+                        # attribute when the request asks for it, so this was
+                        # comparing None against an int.
+                        distributions_so_far = len(log_check.data or [])
+                        if rule_response.max_distributions_per_customer and distributions_so_far >= rule_response.max_distributions_per_customer:
                             logger.info(f"Customer {customer_phone} already reached max distributions for rule {rule['id']}")
                             continue
                         
@@ -1751,11 +1753,11 @@ class LoyaltyService:
                 return
             
             # Count distributions for this rule
-            result = self.db.table("distribution_logs").select("count").eq(
+            result = self.db.table("distribution_logs").select("id").eq(
                 "tenant_id", tenant_id
             ).eq("rule_id", rule_id).execute()
             
-            total_distributions = result.count if hasattr(result, 'count') else 0
+            total_distributions = len(result.data or [])
             
             # Get last distribution date
             last_result = self.db.table("distribution_logs").select("distributed_at").eq(
@@ -1842,11 +1844,11 @@ class LoyaltyService:
             top_rules = []
             if rules_result and hasattr(rules_result, 'data') and rules_result.data:
                 for rule in rules_result.data:
-                    rule_logs = self.db.table("distribution_logs").select("count").eq(
+                    rule_logs = self.db.table("distribution_logs").select("id").eq(
                         "tenant_id", tenant_id
                     ).eq("rule_id", rule["id"]).execute()
                     
-                    rule_count = rule_logs.count if hasattr(rule_logs, 'count') else 0
+                    rule_count = len(rule_logs.data or [])
                     
                     if rule_count > 0:
                         top_rules.append({

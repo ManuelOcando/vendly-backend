@@ -92,7 +92,7 @@ class AlertScheduler:
         try:
             # Get tenant configuration
             tenant_result = self.db.table("tenants").select(
-                "id, name, whatsapp_config_id"
+                "id, name"
             ).eq("id", tenant_id).execute()
             
             if not tenant_result.data:

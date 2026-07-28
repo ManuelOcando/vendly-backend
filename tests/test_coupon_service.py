@@ -536,9 +536,12 @@ class TestCouponService:
         ]
 
         # Per-rule log counts for the top-rules loop (rule-1: 3, rule-2: 1, rule-3: 0)
-        rule1_logs_mock = Mock(count=3)
-        rule2_logs_mock = Mock(count=1)
-        rule3_logs_mock = Mock(count=0)
+        # Counted with len(data), not the response's count attribute: PostgREST
+        # only populates that when the request asks for it, so the service was
+        # reading None here and this test's Mock(count=N) hid it.
+        rule1_logs_mock = Mock(data=[{"id": "log-1"}, {"id": "log-2"}, {"id": "log-4"}])
+        rule2_logs_mock = Mock(data=[{"id": "log-3"}])
+        rule3_logs_mock = Mock(data=[])
 
         # Configure mock chains by shape, since several distinct queries share
         # the same table().select().eq()...execute() call shape:

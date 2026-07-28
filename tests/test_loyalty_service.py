@@ -475,23 +475,24 @@ class TestLoyaltyService:
     @pytest.mark.asyncio
     async def test_get_loyalty_program_summary(self, loyalty_service, mock_db, sample_tenant_id):
         """Test getting loyalty program summary"""
-        # Create mock responses
-        total_customers_mock = Mock()
-        total_customers_mock.data = [
-            {"points_balance": 100, "tier": "bronze"},
-            {"points_balance": 200, "tier": "silver"},
-            {"points_balance": 300, "tier": "gold"}
+        # Totals, point sums and tier distribution all come from this one set of
+        # rows, aggregated in Python. The service used to ask PostgREST for
+        # "count", "sum(...)" and .group("tier"); this test mocked that shape
+        # and so passed, even though the real client rejects all three.
+        loyalty_rows_mock = Mock()
+        loyalty_rows_mock.data = [
+            {"points_balance": 100, "tier": "bronze",
+             "points_earned_total": 200, "points_redeemed_total": 30},
+            {"points_balance": 200, "tier": "silver",
+             "points_earned_total": 200, "points_redeemed_total": 30},
+            {"points_balance": 300, "tier": "gold",
+             "points_earned_total": 200, "points_redeemed_total": 40}
         ]
-        
+
+        # Active customers is still its own query, filtered by date in Postgres.
         active_customers_mock = Mock()
-        active_customers_mock.count = 2
-        
-        points_sum_mock = Mock()
-        points_sum_mock.data = [{
-            "sum": 600,  # total points issued
-            "sum_1": 100  # total points redeemed
-        }]
-        
+        active_customers_mock.data = [{"id": "lp-1"}, {"id": "lp-2"}]
+
         top_rewards_mock = Mock()
         top_rewards_mock.data = [
             {
@@ -501,23 +502,11 @@ class TestLoyaltyService:
                 "reward_type": "discount"
             }
         ]
-        
-        tier_dist_mock = Mock()
-        tier_dist_mock.data = [
-            {"tier": "bronze", "count": 1},
-            {"tier": "silver", "count": 1},
-            {"tier": "gold", "count": 1}
-        ]
-        
-        # Configure mock chain. total_customers and points_sum share the same
-        # table().select().eq().execute() call shape, so they're distinguished
-        # by call order via side_effect rather than by patching a shared target twice.
-        loyalty_service.db.table.return_value.select.return_value.eq.return_value.execute.side_effect = [
-            total_customers_mock, points_sum_mock
-        ]
+
+        # Configure mock chain
+        loyalty_service.db.table.return_value.select.return_value.eq.return_value.execute.return_value = loyalty_rows_mock
         loyalty_service.db.table.return_value.select.return_value.eq.return_value.gte.return_value.execute.return_value = active_customers_mock
         loyalty_service.db.table.return_value.select.return_value.eq.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value = top_rewards_mock
-        loyalty_service.db.table.return_value.select.return_value.eq.return_value.group.return_value.execute.return_value = tier_dist_mock
 
         # Call method
         summary = await loyalty_service.get_loyalty_program_summary(sample_tenant_id)

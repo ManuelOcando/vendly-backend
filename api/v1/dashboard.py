@@ -1,9 +1,13 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from api.deps import get_current_tenant
 from db.supabase import get_supabase_client
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/dashboard")
 
@@ -191,28 +195,29 @@ async def get_whatsapp_status(
     try:
         db = get_supabase_client()
         
-        result = db.table("whatsapp_connections").select("*").eq(
-            "tenant_id", tenant["id"]
-        ).execute()
-        
-        if not result.data:
+        # whatsapp_connections dejó de existir: la migración 008 la renombró a
+        # whatsapp_connections_legacy al sacar Evolution API, y el except de más
+        # abajo convertía ese fallo en "desconectado". El estado real vive en
+        # whatsapp_configs.
+        result = db.table("whatsapp_configs").select(
+            "id, phone_number, is_connected, provider, updated_at"
+        ).eq("tenant_id", tenant["id"]).execute()
+
+        connections = result.data or []
+        if not connections:
             return {"connected": False, "connections": []}
-        
-        connections = result.data
-        active_connection = None
-        
-        for conn in connections:
-            if conn["status"] == "connected":
-                active_connection = conn
-                break
-        
+
+        active_connection = next(
+            (conn for conn in connections if conn.get("is_connected")), None
+        )
+
         return {
             "connected": active_connection is not None,
             "active_connection": active_connection,
             "all_connections": connections
         }
     except Exception as e:
-        # Si la tabla no existe, retornar desconectado sin error
+        logger.error(f"Error reading WhatsApp status: {e}", exc_info=True)
         return {"connected": False, "connections": [], "error": str(e)}
 
 

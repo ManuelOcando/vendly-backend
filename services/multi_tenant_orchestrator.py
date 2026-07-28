@@ -238,7 +238,7 @@ class MultiTenantOrchestrator:
                 self.db.table("categories").insert({
                     "tenant_id": tenant_id,
                     "name": category["name"],
-                    "order": category["order"],
+                    "sort_order": category["order"],
                     "is_active": True
                 }).execute()
             

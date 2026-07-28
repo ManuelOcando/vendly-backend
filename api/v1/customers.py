@@ -27,12 +27,25 @@ async def list_customers(
     """Listar clientes únicos del vendedor basado en órdenes."""
     db = get_supabase_client()
     
-    # Obtener todas las órdenes con info de cliente
+    # Obtener todas las órdenes con info de cliente. El email no vive acá: la
+    # tabla orders no tiene customer_email, y pedirlo hacía que PostgREST
+    # rechazara la consulta entera y este endpoint devolviera 500.
     result = db.table("orders").select(
-        "customer_name, customer_phone, customer_email, total, created_at"
+        "customer_name, customer_phone, total, created_at"
     ).eq("tenant_id", tenant["id"]).execute()
-    
+
     orders = result.data or []
+
+    # El email sí está en customers, indexado por teléfono.
+    customers_result = db.table("customers").select(
+        "phone, email"
+    ).eq("tenant_id", tenant["id"]).execute()
+
+    email_by_phone = {
+        c["phone"].strip(): c.get("email")
+        for c in (customers_result.data or [])
+        if c.get("phone")
+    }
     
     # Agrupar por teléfono (identificador único)
     customers_map = {}
@@ -46,7 +59,7 @@ async def list_customers(
             customers_map[phone] = {
                 "name": order.get("customer_name") or "Cliente",
                 "phone": phone,
-                "email": order.get("customer_email"),
+                "email": email_by_phone.get(phone),
                 "total_orders": 0,
                 "total_spent": 0,
                 "orders_dates": []
