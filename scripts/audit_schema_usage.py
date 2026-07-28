@@ -35,6 +35,7 @@ import io
 import os
 import re
 import sys
+import textwrap
 import tokenize
 from pathlib import Path
 
@@ -76,17 +77,76 @@ BARE_AGGREGATES = {"count", "sum", "avg", "min", "max"}
 
 
 def live_schema(database_url: str) -> dict:
-    """{table: {column, ...}} for the public schema."""
+    """{table: [column, ...]} for the public schema, in declaration order.
+
+    Ordered rather than a set so --emit-schema produces a file that reads like
+    the table does, and so regenerating it twice yields identical output.
+    """
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT table_name, column_name FROM information_schema.columns "
-                "WHERE table_schema = 'public'"
+                "WHERE table_schema = 'public' "
+                "ORDER BY table_name, ordinal_position"
             )
             schema = {}
             for table, column in cur.fetchall():
-                schema.setdefault(table, set()).add(column)
+                schema.setdefault(table, []).append(column)
             return schema
+
+
+def render_expected_schema(schema: dict) -> str:
+    """The source of db/expected_schema.py for this schema."""
+    body = ['"""']
+    body.append("The columns this backend expects each table to have. Generated, not hand-written.")
+    body.append("")
+    body.append("Regenerate after every migration:")
+    body.append("")
+    body.append("    python scripts/audit_schema_usage.py --emit-schema")
+    body.append("")
+    body.append("Two consumers, one source of truth:")
+    body.append("")
+    body.append("* `db/schema_check.py` compares this against the live database at startup and")
+    body.append("  logs whatever is missing, so a migration that never reached an environment is")
+    body.append("  visible in that environment's boot log instead of surfacing weeks later as a")
+    body.append("  feature that quietly does nothing.")
+    body.append("* `tests/fake_supabase.py` validates column names against it, so a query naming")
+    body.append("  a column that does not exist fails in the test suite rather than in production.")
+    body.append("")
+    body.append("The second one is the point. Until now the test doubles modelled the shape of")
+    body.append("the query builder and not the schema of the database, so a query could be")
+    body.append('structurally valid and semantically impossible - `select("count")`,')
+    body.append("`orders.total_amount`, `categories.order` - and 618 tests would still pass. An")
+    body.append("audit on 2026-07-27 found 41 such queries, every one of them inside a try/except")
+    body.append("that turned a schema error into a silently missing feature.")
+    body.append('"""')
+    body.append("")
+    body.append("EXPECTED_SCHEMA = {")
+
+    for table in sorted(schema):
+        joined = ", ".join(f'"{column}"' for column in schema[table])
+        wrapped = textwrap.wrap(
+            joined, width=72,
+            initial_indent=" " * 8, subsequent_indent=" " * 8,
+            break_long_words=False, break_on_hyphens=False,
+        )
+        body.append(f'    "{table}": (')
+        body.extend(wrapped)
+        body.append("    ),")
+
+    body.append("}")
+    body.append("")
+    body.append("")
+    body.append("def columns_for(table: str) -> frozenset:")
+    body.append('    """Known columns for a table, or an empty set if it is not in the map."""')
+    body.append("    return frozenset(EXPECTED_SCHEMA.get(table, ()))")
+    body.append("")
+    body.append("")
+    body.append("def known_table(table: str) -> bool:")
+    body.append("    return table in EXPECTED_SCHEMA")
+    body.append("")
+
+    return "\n".join(body)
 
 
 def python_files() -> list:
@@ -224,7 +284,7 @@ def audit(schema: dict) -> list:
                 else:
                     problems += [
                         f"no column {column}"
-                        for column in sorted(columns - schema[table])
+                        for column in sorted(columns - set(schema[table]))
                     ]
 
             if problems:
@@ -239,6 +299,9 @@ def main() -> int:
     )
     parser.add_argument("--quiet", action="store_true",
                         help="print only the summary line")
+    parser.add_argument("--emit-schema", action="store_true",
+                        help="regenerate db/expected_schema.py from the live database "
+                             "and exit; run this after applying a migration")
     args = parser.parse_args()
 
     database_url = os.getenv("DATABASE_URL")
@@ -259,6 +322,15 @@ def main() -> int:
     except Exception as e:
         print(f"Could not read the schema: {e}", file=sys.stderr)
         return 2
+
+    if args.emit_schema:
+        target = BACKEND_ROOT / "db" / "expected_schema.py"
+        target.write_text(render_expected_schema(schema), encoding="utf-8")
+        print(
+            f"Wrote {target.relative_to(BACKEND_ROOT).as_posix()}: "
+            f"{len(schema)} table(s), {sum(len(c) for c in schema.values())} column(s)."
+        )
+        return 0
 
     findings = audit(schema)
 

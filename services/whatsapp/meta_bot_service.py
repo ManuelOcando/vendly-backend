@@ -228,7 +228,7 @@ class MetaWhatsAppBotService:
 
             return language
         except Exception as e:
-            logger.warning(f"Could not resolve language for tenant {tenant_id}: {e}")
+            logger.error(f"Could not resolve language for tenant {tenant_id}: {e}", exc_info=True)
             return DEFAULT_LANGUAGE
 
     async def _get_tenant_default_language(self, tenant_id: str) -> str:
@@ -240,7 +240,7 @@ class MetaWhatsAppBotService:
             if result.data:
                 return normalize_language(result.data[0].get("default_language"))
         except Exception as e:
-            logger.warning(f"Could not read default_language for tenant {tenant_id}: {e}")
+            logger.error(f"Could not read default_language for tenant {tenant_id}: {e}", exc_info=True)
         return DEFAULT_LANGUAGE
 
     async def _persist_session_language(self, session_id: Optional[str], language: str) -> None:
@@ -257,7 +257,7 @@ class MetaWhatsAppBotService:
                 "session_data": session_data
             }).eq("id", session_id).execute()
         except Exception as e:
-            logger.warning(f"Could not persist language for session {session_id}: {e}")
+            logger.error(f"Could not persist language for session {session_id}: {e}", exc_info=True)
 
     async def _append_translation_notice(
         self,
@@ -299,7 +299,7 @@ class MetaWhatsAppBotService:
 
             return response + t("translation.notice", language)
         except Exception as e:
-            logger.warning(f"Could not append translation notice for tenant {tenant_id}: {e}")
+            logger.error(f"Could not append translation notice for tenant {tenant_id}: {e}", exc_info=True)
             return response
 
 

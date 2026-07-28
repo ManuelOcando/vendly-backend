@@ -177,6 +177,12 @@ async def update_stock(
                 errors.append(f"Error actualizando item {update.item_id}")
                 
         except Exception as e:
+            # The caller gets the message back in `errors`, but not the
+            # traceback, and a bad column name here looks identical to a bad
+            # item id from the outside.
+            logger.error(
+                "Bulk update failed for item %s: %s", update.item_id, e, exc_info=True
+            )
             errors.append(f"Error en item {update.item_id}: {str(e)}")
     
     return {

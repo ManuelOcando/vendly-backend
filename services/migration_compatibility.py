@@ -189,7 +189,7 @@ class MigrationCompatibilityChecker:
                 except Exception as e:
                     error_msg = f"Table {table_name} not accessible: {str(e)}"
                     errors.append(error_msg)
-                    logger.warning(error_msg)
+                    logger.error(error_msg, exc_info=True)
             
             # Check if new Vendly Pro tables are available
             new_tables = ["customer_profiles", "purchase_history", "loyalty_points"]
@@ -229,6 +229,7 @@ class MigrationCompatibilityChecker:
                         warnings.append("WhatsApp config uses legacy format - migration recommended")
                         
             except Exception as e:
+                logger.error("Could not check WhatsApp config: %s", e, exc_info=True)
                 warnings.append(f"Could not check WhatsApp config: {str(e)}")
             
             return APICompatibilityResult(
@@ -284,7 +285,7 @@ class MigrationCompatibilityChecker:
                     if result.data is not None:
                         source_tables.append(table_name)
                 except Exception as e:
-                    logger.warning(f"Source table {table_name} not found: {e}")
+                    logger.error(f"Source table {table_name} not found: {e}", exc_info=True)
             
             # Get target tables (Vendly Pro)
             for table_name in self.REQUIRED_TARGET_TABLES:
@@ -293,7 +294,7 @@ class MigrationCompatibilityChecker:
                     if result.data is not None:
                         target_tables.append(table_name)
                 except Exception as e:
-                    logger.warning(f"Target table {table_name} not available: {e}")
+                    logger.error(f"Target table {table_name} not available: {e}", exc_info=True)
             
             # Check for missing columns in target
             schema_checks = {
@@ -315,7 +316,7 @@ class MigrationCompatibilityChecker:
                                         missing_columns[table_name] = []
                                     missing_columns[table_name].append(col)
                     except Exception as e:
-                        logger.warning(f"Could not check columns for {table_name}: {e}")
+                        logger.error(f"Could not check columns for {table_name}: {e}", exc_info=True)
             
             # Check for data that might be lost during migration
             # Check for orders without customer phone (will be skipped in migration)
@@ -332,7 +333,7 @@ class MigrationCompatibilityChecker:
                         "risk": "Orders without customer phone will not create customer profiles"
                     })
             except Exception as e:
-                logger.warning(f"Could not check orders data: {e}")
+                logger.error(f"Could not check orders data: {e}", exc_info=True)
             
             # Check for items without category (warning)
             try:
@@ -349,7 +350,7 @@ class MigrationCompatibilityChecker:
                         "severity": "low"
                     })
             except Exception as e:
-                logger.warning(f"Could not check items data: {e}")
+                logger.error(f"Could not check items data: {e}", exc_info=True)
             
             # Determine compatibility level
             critical_missing = sum(len(cols) for cols in missing_columns.values())
@@ -434,7 +435,7 @@ class MigrationCompatibilityChecker:
                         setup_required.append(feature_name)
                         
                 except Exception as e:
-                    logger.warning(f"Error checking feature {feature_name}: {e}")
+                    logger.error(f"Error checking feature {feature_name}: {e}", exc_info=True)
                     features[feature_name] = FeatureStatus.UNAVAILABLE
                     unavailable_features.append(feature_name)
             
@@ -451,6 +452,7 @@ class MigrationCompatibilityChecker:
                     features["whatsapp"] = FeatureStatus.AVAILABLE
                     
             except Exception as e:
+                logger.error("Could not check WhatsApp config: %s", e, exc_info=True)
                 warnings.append(f"Could not check WhatsApp config: {str(e)}")
                 features["whatsapp"] = FeatureStatus.UNAVAILABLE
             
@@ -484,7 +486,12 @@ class MigrationCompatibilityChecker:
                 else:
                     return FeatureStatus.REQUIRES_SETUP  # Table exists but no data
             return FeatureStatus.UNAVAILABLE
-        except Exception:
+        except Exception as e:
+            # Reporting UNAVAILABLE without a word in the log is how every one
+            # of these checks came to answer UNAVAILABLE for every tenant: the
+            # queries asked for a column named "count", which PostgREST
+            # rejects. The traceback names the check that failed.
+            logger.error("Feature check failed, reporting UNAVAILABLE: %s", e, exc_info=True)
             return FeatureStatus.UNAVAILABLE
     
     async def _check_purchase_history_feature(self, tenant_id: str) -> FeatureStatus:
@@ -501,7 +508,12 @@ class MigrationCompatibilityChecker:
                 else:
                     return FeatureStatus.REQUIRES_SETUP
             return FeatureStatus.UNAVAILABLE
-        except Exception:
+        except Exception as e:
+            # Reporting UNAVAILABLE without a word in the log is how every one
+            # of these checks came to answer UNAVAILABLE for every tenant: the
+            # queries asked for a column named "count", which PostgREST
+            # rejects. The traceback names the check that failed.
+            logger.error("Feature check failed, reporting UNAVAILABLE: %s", e, exc_info=True)
             return FeatureStatus.UNAVAILABLE
     
     async def _check_loyalty_points_feature(self, tenant_id: str) -> FeatureStatus:
@@ -518,7 +530,12 @@ class MigrationCompatibilityChecker:
                 else:
                     return FeatureStatus.REQUIRES_SETUP
             return FeatureStatus.UNAVAILABLE
-        except Exception:
+        except Exception as e:
+            # Reporting UNAVAILABLE without a word in the log is how every one
+            # of these checks came to answer UNAVAILABLE for every tenant: the
+            # queries asked for a column named "count", which PostgREST
+            # rejects. The traceback names the check that failed.
+            logger.error("Feature check failed, reporting UNAVAILABLE: %s", e, exc_info=True)
             return FeatureStatus.UNAVAILABLE
     
     async def _check_loyalty_rewards_feature(self, tenant_id: str) -> FeatureStatus:
@@ -535,7 +552,12 @@ class MigrationCompatibilityChecker:
                 else:
                     return FeatureStatus.REQUIRES_SETUP
             return FeatureStatus.UNAVAILABLE
-        except Exception:
+        except Exception as e:
+            # Reporting UNAVAILABLE without a word in the log is how every one
+            # of these checks came to answer UNAVAILABLE for every tenant: the
+            # queries asked for a column named "count", which PostgREST
+            # rejects. The traceback names the check that failed.
+            logger.error("Feature check failed, reporting UNAVAILABLE: %s", e, exc_info=True)
             return FeatureStatus.UNAVAILABLE
     
     async def _check_recommendations_feature(self, tenant_id: str) -> FeatureStatus:
@@ -553,7 +575,12 @@ class MigrationCompatibilityChecker:
                 return FeatureStatus.PARTIALLY_AVAILABLE
             else:
                 return FeatureStatus.REQUIRES_SETUP
-        except Exception:
+        except Exception as e:
+            # Reporting UNAVAILABLE without a word in the log is how every one
+            # of these checks came to answer UNAVAILABLE for every tenant: the
+            # queries asked for a column named "count", which PostgREST
+            # rejects. The traceback names the check that failed.
+            logger.error("Feature check failed, reporting UNAVAILABLE: %s", e, exc_info=True)
             return FeatureStatus.UNAVAILABLE
     
     async def _check_analytics_feature(self, tenant_id: str) -> FeatureStatus:
@@ -570,7 +597,12 @@ class MigrationCompatibilityChecker:
                 return FeatureStatus.PARTIALLY_AVAILABLE
             else:
                 return FeatureStatus.REQUIRES_SETUP
-        except Exception:
+        except Exception as e:
+            # Reporting UNAVAILABLE without a word in the log is how every one
+            # of these checks came to answer UNAVAILABLE for every tenant: the
+            # queries asked for a column named "count", which PostgREST
+            # rejects. The traceback names the check that failed.
+            logger.error("Feature check failed, reporting UNAVAILABLE: %s", e, exc_info=True)
             return FeatureStatus.UNAVAILABLE
     
     # ============================================

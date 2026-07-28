@@ -132,7 +132,7 @@ class PostSaleService:
                 access_token=config["access_token"],
             ).send_message(seller_phone, notification)
         except Exception as e:
-            logger.warning(f"Could not notify seller for tenant {tenant_id}: {e}")
+            logger.error(f"Could not notify seller for tenant {tenant_id}: {e}", exc_info=True)
 
     async def resolve_request(self, tenant_id: str, request_id: str) -> bool:
         """Mark a request resolved and ask the customer to rate the resolution."""
@@ -191,7 +191,7 @@ class PostSaleService:
                     "session_data": session_data
                 }).eq("id", session["id"]).execute()
         except Exception as e:
-            logger.warning(f"Could not request satisfaction rating from {customer_phone}: {e}")
+            logger.error(f"Could not request satisfaction rating from {customer_phone}: {e}", exc_info=True)
 
     async def rate_satisfaction(self, request_id: str, rating: int) -> bool:
         """Record a 1-5 satisfaction rating for a resolved request"""

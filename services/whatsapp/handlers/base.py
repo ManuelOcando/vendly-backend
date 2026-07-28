@@ -111,5 +111,5 @@ class BaseWhatsAppHandler(MessageHandler):
             if result.data:
                 return result.data[0].get("session_data") or {}
         except Exception as e:
-            logger.warning(f"Could not read session_data for {session_id}: {e}")
+            logger.error(f"Could not read session_data for {session_id}: {e}", exc_info=True)
         return {}

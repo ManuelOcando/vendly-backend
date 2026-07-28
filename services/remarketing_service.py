@@ -573,7 +573,7 @@ class RemarketingService:
                 session_data = result.data[0].get("session_data") or {}
                 return normalize_language(session_data.get("language"))
         except Exception as e:
-            logger.warning(f"Could not read language for {customer_phone}: {e}")
+            logger.error(f"Could not read language for {customer_phone}: {e}", exc_info=True)
         return DEFAULT_LANGUAGE
 
     async def _get_customer_profile(

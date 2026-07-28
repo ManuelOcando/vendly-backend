@@ -372,7 +372,7 @@ class RecommendationEngine:
                                 )
                             )
         except Exception as e:
-            logger.warning(f"Could not get product affinities: {e}")
+            logger.error(f"Could not get product affinities: {e}", exc_info=True)
         
         # Fallback: get products from same categories as purchased items
         if not candidates and purchase_history:
@@ -404,7 +404,7 @@ class RecommendationEngine:
                             )
                         )
             except Exception as e:
-                logger.warning(f"Could not get category-based fallback candidates: {e}")
+                logger.error(f"Could not get category-based fallback candidates: {e}", exc_info=True)
 
         return candidates
     
@@ -584,7 +584,7 @@ class RecommendationEngine:
                         )
                     )
         except Exception as e:
-            logger.warning(f"Error getting promotional products: {e}")
+            logger.error(f"Error getting promotional products: {e}", exc_info=True)
 
         return candidates
     
@@ -634,7 +634,7 @@ class RecommendationEngine:
                         )
                     )
         except Exception as e:
-            logger.warning(f"Error filtering allergy-safe products: {e}")
+            logger.error(f"Error filtering allergy-safe products: {e}", exc_info=True)
         
         return candidates
     
@@ -692,7 +692,7 @@ class RecommendationEngine:
                                 )
                             )
         except Exception as e:
-            logger.warning(f"Error getting trending products: {e}")
+            logger.error(f"Error getting trending products: {e}", exc_info=True)
 
         # Fallback: return random products if no trending data
         if not candidates:
@@ -716,7 +716,7 @@ class RecommendationEngine:
                             )
                         )
             except Exception as e:
-                logger.warning(f"Error getting fallback products: {e}")
+                logger.error(f"Error getting fallback products: {e}", exc_info=True)
 
         return candidates
     
@@ -973,7 +973,7 @@ class RecommendationEngine:
             ).execute()
             return {row["id"]: row["name"] for row in (result.data or [])}
         except Exception as e:
-            logger.warning(f"Error getting category names: {e}")
+            logger.error(f"Error getting category names: {e}", exc_info=True)
             return {}
 
     def _enrich_product(self, item: Dict[str, Any], category_names: Dict[str, str]) -> Dict[str, Any]:
@@ -1007,7 +1007,7 @@ class RecommendationEngine:
             category_names = await self._get_category_name_map(tenant_id)
             return [self._enrich_product(item, category_names) for item in result.data]
         except Exception as e:
-            logger.warning(f"Error getting available products: {e}")
+            logger.error(f"Error getting available products: {e}", exc_info=True)
             return []
     
     async def _get_products_by_ids(
@@ -1025,7 +1025,7 @@ class RecommendationEngine:
             ).eq("tenant_id", tenant_id).in_("id", product_ids).execute()
             return result.data if isinstance(result.data, list) else []
         except Exception as e:
-            logger.warning(f"Error getting products by IDs: {e}")
+            logger.error(f"Error getting products by IDs: {e}", exc_info=True)
             return []
     
     async def _store_recommendations(
@@ -1043,7 +1043,7 @@ class RecommendationEngine:
                 f"customer {customer_phone}"
             )
         except Exception as e:
-            logger.warning(f"Error storing recommendations: {e}")
+            logger.error(f"Error storing recommendations: {e}", exc_info=True)
     
     def _group_recommendations(
         self,

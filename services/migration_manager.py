@@ -391,7 +391,7 @@ class MigrationManager:
                         migrated_count += 1
                         
                 except Exception as e:
-                    logger.warning(f"Failed to migrate customer {phone}: {e}")
+                    logger.error(f"Failed to migrate customer {phone}: {e}", exc_info=True)
                     skipped_count += 1
             
             return {
@@ -485,7 +485,7 @@ class MigrationManager:
                             migrated_count += 1
                             
                 except Exception as e:
-                    logger.warning(f"Failed to migrate order {order.get('id')}: {e}")
+                    logger.error(f"Failed to migrate order {order.get('id')}: {e}", exc_info=True)
                     skipped_count += 1
             
             return {
@@ -548,7 +548,7 @@ class MigrationManager:
                     created_count += 1
                     
                 except Exception as e:
-                    logger.warning(f"Failed to create loyalty account: {e}")
+                    logger.error(f"Failed to create loyalty account: {e}", exc_info=True)
                     skipped_count += 1
             
             return {
@@ -616,7 +616,7 @@ class MigrationManager:
             }).execute()
             
         except Exception as e:
-            logger.warning(f"Failed to store migration record: {e}")
+            logger.error(f"Failed to store migration record: {e}", exc_info=True)
     
     # ============================================
     # MIGRATION VALIDATION

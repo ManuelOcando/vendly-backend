@@ -50,7 +50,7 @@ class SchedulingService:
             close_time = datetime.strptime(day_hours["close"], "%H:%M").time()
             return (open_time, close_time)
         except Exception as e:
-            logger.warning(f"Error getting business hours for tenant {tenant_id}: {e}")
+            logger.error(f"Error getting business hours for tenant {tenant_id}: {e}", exc_info=True)
             return None
 
     async def _get_item_duration_minutes(self, tenant_id: str, item_id: str) -> int:
@@ -62,7 +62,7 @@ class SchedulingService:
             if result.data and result.data[0].get("service_duration_minutes"):
                 return result.data[0]["service_duration_minutes"]
         except Exception as e:
-            logger.warning(f"Error getting service duration for item {item_id}: {e}")
+            logger.error(f"Error getting service duration for item {item_id}: {e}", exc_info=True)
 
         return DEFAULT_SERVICE_DURATION_MINUTES
 
@@ -75,7 +75,7 @@ class SchedulingService:
             if result.data and result.data[0].get("cancellation_policy_hours") is not None:
                 return result.data[0]["cancellation_policy_hours"]
         except Exception as e:
-            logger.warning(f"Error getting cancellation policy for tenant {tenant_id}: {e}")
+            logger.error(f"Error getting cancellation policy for tenant {tenant_id}: {e}", exc_info=True)
 
         return DEFAULT_CANCELLATION_POLICY_HOURS
 
@@ -104,7 +104,7 @@ class SchedulingService:
             ).execute()
             booked_data = existing.data or []
         except Exception as e:
-            logger.warning(f"Error getting existing appointments for item {item_id}: {e}")
+            logger.error(f"Error getting existing appointments for item {item_id}: {e}", exc_info=True)
             booked_data = []
 
         booked_ranges = []
@@ -266,4 +266,4 @@ class SchedulingService:
                 access_token=config["access_token"],
             ).send_message(seller_phone, notification)
         except Exception as e:
-            logger.warning(f"Could not notify seller for tenant {tenant_id}: {e}")
+            logger.error(f"Could not notify seller for tenant {tenant_id}: {e}", exc_info=True)

@@ -489,11 +489,11 @@ class CartHandler(BaseWhatsAppHandler):
                 try:
                     await tracker.track_shown(tenant_id, phone, rec.product_id, rec.recommendation_type)
                 except Exception as tracking_err:
-                    logger.warning(f"Could not track shown recommendation: {tracking_err}")
+                    logger.error(f"Could not track shown recommendation: {tracking_err}", exc_info=True)
 
             return t("cart.recommendations_header", language) + "\n" + "\n".join(lines)
         except Exception as e:
-            logger.warning(f"Could not build recommendations for tenant {tenant_id}: {e}")
+            logger.error(f"Could not build recommendations for tenant {tenant_id}: {e}", exc_info=True)
             return None
 
 
@@ -555,9 +555,9 @@ class CartConfirmationHandler(BaseWhatsAppHandler):
                     tenant_id, phone, order["id"], purchase_items
                 )
             except Exception as history_err:
-                logger.warning(
+                logger.error(
                     f"Could not record purchase history for tenant {tenant_id}: {history_err}"
-                )
+                , exc_info=True)
 
             # Notify seller about new order
             try:
@@ -592,7 +592,7 @@ class CartConfirmationHandler(BaseWhatsAppHandler):
                         f"No whatsapp_configs found for tenant {tenant_id}, skipping seller notification"
                     )
             except Exception as notify_err:
-                logger.warning(f"Could not notify seller for tenant {tenant_id}: {notify_err}")
+                logger.error(f"Could not notify seller for tenant {tenant_id}: {notify_err}", exc_info=True)
 
             # Send payment instructions
             payment_instructions = t("order.payment_default", language)
@@ -604,7 +604,7 @@ class CartConfirmationHandler(BaseWhatsAppHandler):
                 if bot_config_result.data and bot_config_result.data[0].get("payment_instructions"):
                     payment_instructions = bot_config_result.data[0]["payment_instructions"]
             except Exception as config_err:
-                logger.warning(f"Could not fetch bot_configurations for tenant {tenant_id}: {config_err}")
+                logger.error(f"Could not fetch bot_configurations for tenant {tenant_id}: {config_err}", exc_info=True)
             
             payment_message = t(
                 "order.confirmed", language,

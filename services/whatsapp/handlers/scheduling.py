@@ -115,7 +115,7 @@ class ServiceSchedulingHandler(BaseWhatsAppHandler):
             ).eq("type", "service").eq("is_active", True).limit(10).execute()
             return result.data or []
         except Exception as e:
-            logger.warning(f"Error getting bookable services for tenant {tenant_id}: {e}")
+            logger.error(f"Error getting bookable services for tenant {tenant_id}: {e}", exc_info=True)
             return []
 
     async def _select_service(

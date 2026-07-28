@@ -124,7 +124,7 @@ class OfflineModeService:
             ).limit(1).execute()
             return result.data[0] if result.data else {}
         except Exception as e:
-            logger.warning(f"Error fetching bot configuration for tenant {tenant_id}: {e}")
+            logger.error(f"Error fetching bot configuration for tenant {tenant_id}: {e}", exc_info=True)
             return {}
 
     async def _get_exception_for_date(
@@ -136,14 +136,21 @@ class OfflineModeService:
             ).eq("exception_date", target_date.isoformat()).limit(1).execute()
             return result.data[0] if result.data else None
         except Exception as e:
-            logger.warning(f"Error fetching business hours exception for tenant {tenant_id}: {e}")
+            logger.error(f"Error fetching business hours exception for tenant {tenant_id}: {e}", exc_info=True)
             return None
 
     def _get_zone(self, tz_name: Optional[str]):
         from zoneinfo import ZoneInfo
         try:
             return ZoneInfo(tz_name or DEFAULT_TIMEZONE)
-        except Exception:
+        except Exception as e:
+            # A typo in a tenant's timezone silently shifts every opening hour,
+            # reminder and appointment they have. Falling back is right; doing
+            # it quietly is not.
+            logger.error(
+                "Unknown timezone %r, falling back to %s: %s",
+                tz_name, DEFAULT_TIMEZONE, e, exc_info=True,
+            )
             return ZoneInfo(DEFAULT_TIMEZONE)
 
     async def is_offline(self, tenant_id: str, now: Optional[datetime] = None) -> bool:
@@ -251,7 +258,7 @@ class OfflineModeService:
                 "message": message,
             }).execute()
         except Exception as e:
-            logger.warning(f"Could not store offline message for tenant {tenant_id}: {e}")
+            logger.error(f"Could not store offline message for tenant {tenant_id}: {e}", exc_info=True)
 
     async def record_seller_activity(self, tenant_id: str) -> None:
         await self._upsert_bot_config(tenant_id, {
@@ -298,7 +305,7 @@ class OfflineModeService:
                 "notified_at": datetime.now(timezone.utc).isoformat()
             }).in_("id", [m["id"] for m in messages]).execute()
         except Exception as e:
-            logger.warning(f"Could not notify seller of pending offline messages for tenant {tenant_id}: {e}")
+            logger.error(f"Could not notify seller of pending offline messages for tenant {tenant_id}: {e}", exc_info=True)
 
     # ------------------------------------------------------------------
     # Seller configuration

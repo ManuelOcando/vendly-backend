@@ -1,9 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
+import asyncio
 import os
 from config import get_settings
 from api.v1.router import router as v1_router
+from db.schema_check import run_schema_check
 from middleware.rate_limiter import limiter, rate_limit_exception_handler
 from slowapi.errors import RateLimitExceeded
 import logging
@@ -140,12 +142,40 @@ async def root():
     }
 
 
+_schema_check_task = None
+
+
+def _log_schema_check_completion(task):
+    """Surface a schema check that died instead of letting it disappear."""
+    if task.cancelled():
+        logger.warning("Schema check was cancelled before it finished")
+        return
+    error = task.exception()
+    if error is not None:
+        logger.error("Schema check task failed: %s", error, exc_info=error)
+
+
 @app.on_event("startup")
 async def startup_event():
     logger.info(f"Application startup complete - {settings.APP_NAME}")
     if not settings.DEBUG:
         logger.info("Production mode enabled - All required environment variables validated")
-    
+
+    # Report any drift between the database and what the code expects. Fired as
+    # a task, not awaited: it is one request per table and must not delay
+    # readiness. It never raises and never blocks startup - drift should be loud
+    # in the boot log, not a reason to refuse to serve.
+    #
+    # The reference is kept deliberately. asyncio holds only a weak reference to
+    # a running task, so a bare create_task() can be garbage collected before it
+    # finishes - which is exactly what happened the first time this was wired up:
+    # the check silently never ran. The callback is here for the same reason, so
+    # a failure inside the task cannot vanish either.
+    global _schema_check_task
+    _schema_check_task = asyncio.create_task(run_schema_check())
+    _schema_check_task.add_done_callback(_log_schema_check_completion)
+
+
     # Debug: List all registered routes
     logger.info("Registered routes:")
     for route in app.routes:
