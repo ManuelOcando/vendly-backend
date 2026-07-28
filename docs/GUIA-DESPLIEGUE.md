@@ -2,12 +2,18 @@
 
 ## Resumen de Plataformas
 
-| Componente | Plataforma | URL Temporal |
-|------------|------------|--------------|
+| Componente | Plataforma | URL |
+|------------|------------|-----|
 | Frontend (Next.js) | Vercel | `https://vendly-frontend.vercel.app` |
-| Backend (FastAPI) | Render | `https://vendly-api.onrender.com` |
+| Backend (FastAPI) | Render | `https://vendly-backend-uuos.onrender.com` |
 | Base de Datos | Supabase | `https://slspihwznliibdecdtkj.supabase.co` |
 | Redis | Upstash | Configurado en variables de entorno |
+
+> La URL del backend es `vendly-backend-uuos.onrender.com`, no `vendly-api.onrender.com`.
+> El servicio en Render se llama `vendly-api`, pero su dominio lleva el sufijo que
+> Render agregó al crearlo. `vendly-api.onrender.com` es otra cosa: responde
+> `"API is running"` en texto plano y da 404 en `/api/v1/health`. Es la misma URL
+> que usa `config.py` (`BACKEND_URL`).
 
 ---
 
@@ -15,100 +21,123 @@
 
 ### 1.1 Preparar el Backend
 
-**Archivo `render.yaml` ya existe:**
-```yaml
-services:
-  - type: web
-    name: vendly-api
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port 8000
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.0
-```
+La configuración vive en [`render.yaml`](../render.yaml) y en
+[`requirements.txt`](../requirements.txt). Esta guía no los reproduce a propósito:
+copiarlos acá los deja desactualizados en cuanto cambian. Lo que importa saber:
 
-**Verificar `requirements.txt`:**
-```
-fastapi==0.115.0
-uvicorn[standard]==0.32.0
-python-dotenv==1.0.1
-supabase==2.9.0
-httpx==0.27.2
-pydantic-settings==2.6.1
-pydantic==2.9.2
-python-multipart==0.0.17
-redis==5.2.0
-```
+- **Start command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`. Tiene que ser
+  `$PORT`, no un puerto fijo — Render asigna el puerto por variable de entorno y
+  un valor hardcodeado hace que el health check falle.
+- **Python**: 3.12.
 
 ### 1.2 Pasos en Render.com
 
 1. **Ir a**: https://dashboard.render.com/
 2. **Click**: "New +" → "Web Service"
-3. **Conectar**: Tu repositorio de GitHub/GitLab
+3. **Conectar**: el repositorio `ManuelOcando/vendly-backend`
 4. **Configurar**:
    - **Name**: `vendly-api`
    - **Runtime**: Python 3
    - **Build Command**: `pip install -r requirements.txt`
-   - **Start Command**: `uvicorn main:app --host 0.0.0.0 --port 8000`
+   - **Start Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
    - **Plan**: Free
 
-5. **Variables de Entorno** (en Render Dashboard → Environment):
-   ```
-   SUPABASE_URL=https://slspihwznliibdecdtkj.supabase.co
-   SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-   SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-   UPSTASH_REDIS_URL=https://your-url.upstash.io
-   UPSTASH_REDIS_TOKEN=your-token
-   EVOLUTION_API_URL=http://localhost:8080
-   EVOLUTION_API_KEY=your-key
-   FRONTEND_URL=https://vendly-frontend.vercel.app
-   ```
+### 1.3 Variables de Entorno
 
-6. **Click**: "Create Web Service"
+`render.yaml` declara con valor las que no son secretas:
 
-### 1.3 Verificar Despliegue
+```
+PYTHON_VERSION=3.12.0
+DEBUG=false
+SUPABASE_URL=https://slspihwznliibdecdtkj.supabase.co
+SUPABASE_ANON_KEY=eyJ...            (clave pública, va en el repo)
+FRONTEND_URL=https://vendly-frontend.vercel.app
+```
 
-- Esperar a que el build complete (2-3 minutos)
-- URL será: `https://vendly-api.onrender.com`
-- Probar: `https://vendly-api.onrender.com/api/v1/health`
+Y estas **con `sync: false`**, o sea que Render **no** las toma del archivo: hay
+que cargarlas a mano en Dashboard → Environment, y pueden quedar desincronizadas
+del `.env` local sin que nada avise.
+
+```
+SUPABASE_SECRET_KEY        (no se llama SUPABASE_SERVICE_ROLE_KEY)
+UPSTASH_REDIS_URL          endpoint REST (https://...), no la cadena rediss://
+UPSTASH_REDIS_TOKEN
+META_WHATSAPP_PHONE_ID
+META_WHATSAPP_TOKEN
+META_WHATSAPP_BUSINESS_ID
+META_WEBHOOK_VERIFY_TOKEN
+GEMINI_API_KEY
+OPENROUTER_API_KEY
+RESEND_API_KEY
+SENTRY_DSN
+```
+
+Dos detalles que ya causaron caídas silenciosas:
+
+- **Upstash usa el endpoint REST**, no la cadena de conexión `rediss://`. Los
+  nombres también difieren de los que muestra la consola de Upstash. Si están
+  mal, los carritos fallan sin un solo error en los logs: el bot responde
+  "carrito expirado" y la API devuelve 404.
+- **`DATABASE_URL` no va en Render.** La app habla con la base por la API REST de
+  Supabase; esa variable solo la usan los scripts locales (ver PASO 2).
+
+### 1.4 Verificar Despliegue
+
+```bash
+curl https://vendly-backend-uuos.onrender.com/api/v1/health
+```
+
+Debe responder:
+
+```json
+{"status":"ok","app":"Vendly API","version":"0.1.0","environment":"production",
+ "supabase":"connected","redis":"connected"}
+```
+
+Si `redis` o `supabase` dicen `error`, es una variable de entorno mal cargada.
+
+En los logs de arranque (Dashboard → Logs) buscar:
+
+```
+Schema check passed: 43 table(s) match db/expected_schema.py
+```
+
+Ese chequeo compara la base contra lo que el código espera. Si aparece
+`Schema drift: ...`, hay una migración sin aplicar en ese entorno — ver PASO 2.
+No aborta el arranque a propósito: el resto de la app puede estar perfectamente
+usable.
 
 ---
 
-## PASO 2: Desplegar Frontend en Vercel
+## PASO 2: Migraciones de Base de Datos
 
-### 2.1 Preparar el Frontend
+Las migraciones **no corren en el deploy**. Se aplican a mano desde local, porque
+el DDL necesita conexión directa a Postgres y la app solo tiene la API REST.
 
-**Verificar `next.config.ts`:**
-```typescript
-import type { NextConfig } from "next";
+Requiere `DATABASE_URL` en `vendly-backend/.env` (ver
+[`.env.example`](../.env.example) para el formato exacto y las trampas de host y
+puerto):
 
-const nextConfig: NextConfig = {
-  output: 'standalone',
-  env: {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000',
-  },
-};
-
-export default nextConfig;
+```bash
+python scripts/migrate.py --status    # qué está aplicado y qué falta
+python scripts/migrate.py --dry-run   # qué correría, sin tocar nada
+python scripts/migrate.py             # aplicar las pendientes
 ```
 
-**Verificar `package.json`:**
-```json
-{
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint"
-  }
-}
+Después de aplicar una migración, regenerar el mapa de esquema que usan el
+self-check de arranque y los tests:
+
+```bash
+python scripts/audit_schema_usage.py --emit-schema
+python scripts/audit_schema_usage.py     # 0 hallazgos esperados
 ```
 
-### 2.2 Pasos en Vercel.com
+---
+
+## PASO 3: Desplegar Frontend en Vercel
 
 1. **Ir a**: https://vercel.com/new
-2. **Importar**: Tu repositorio de GitHub
+2. **Importar**: el repositorio del frontend
 3. **Configurar Proyecto**:
    - **Framework Preset**: Next.js
    - **Root Directory**: `vendly-frontend`
@@ -117,137 +146,152 @@ export default nextConfig;
 
 4. **Variables de Entorno**:
    ```
-   NEXT_PUBLIC_API_URL=https://vendly-api.onrender.com
+   NEXT_PUBLIC_API_URL=https://vendly-backend-uuos.onrender.com
    NEXT_PUBLIC_SUPABASE_URL=https://slspihwznliibdecdtkj.supabase.co
-   NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...
    ```
+
+   En local, `NEXT_PUBLIC_API_URL` apunta a `http://localhost:8000`.
 
 5. **Click**: "Deploy"
 
-### 2.3 Verificar Despliegue
-
-- Esperar a que el build complete (1-2 minutos)
-- URL será: `https://vendly-frontend.vercel.app`
-- Probar: Abrir la URL en navegador
-
 ---
 
-## PASO 3: Configurar CORS en Backend
+## PASO 4: Configurar CORS
 
-Una vez desplegado, actualizar `FRONTEND_URL` en Render:
+`FRONTEND_URL` en Render tiene que ser el dominio exacto del frontend:
 
 ```
 FRONTEND_URL=https://vendly-frontend.vercel.app
 ```
 
-Esto permite que el backend acepte peticiones del frontend desplegado.
+Sin eso el navegador bloquea las peticiones. `main.py` avisa al arrancar con
+`FRONTEND_URL not properly configured` si el valor no parece una URL de
+producción.
 
 ---
 
-## PASO 4: Configurar Webhook de WhatsApp
+## PASO 5: Configurar Webhook de WhatsApp
 
-### 4.1 Evolution API
+El proyecto usa la **Meta WhatsApp Cloud API**. Evolution API se eliminó en la
+migración 008; si alguna doc todavía menciona `EVOLUTION_API_URL` o
+`EVOLUTION_API_KEY`, está desactualizada.
 
-Si estás usando Evolution API propia:
+En Meta for Developers → tu app → WhatsApp → Configuration → Webhook:
 
-1. Configurar webhook en Evolution API apuntando a:
-   ```
-   https://vendly-api.onrender.com/api/v1/whatsapp/webhook
-   ```
+- **Callback URL**: `https://vendly-backend-uuos.onrender.com/api/v1/whatsapp/webhook`
+- **Verify Token**: el mismo valor que `META_WEBHOOK_VERIFY_TOKEN` en Render
+- **Webhook fields**: suscribir `messages`
 
-2. Verificar que la instancia está conectada
+Meta valida el webhook con un `GET` a esa misma URL antes de aceptarla, así que
+el servicio tiene que estar desplegado y respondiendo primero.
 
-### 4.2 Alternativa: Usar ngrok para testing
-
-Si no tienes Evolution API desplegada:
+### Testing local con ngrok
 
 ```bash
-# Instalar ngrok
-# En terminal separada con backend local:
 ngrok http 8000
-
-# Usar la URL de ngrok como webhook temporal
-# Ejemplo: https://abc123.ngrok.io/api/v1/whatsapp/webhook
+# Usar la URL de ngrok como Callback URL temporal:
+# https://abc123.ngrok.io/api/v1/whatsapp/webhook
 ```
 
 ---
 
-## PASO 5: URLs Finales
-
-Después del despliegue, tendrás:
+## PASO 6: URLs Finales
 
 | Servicio | URL Local | URL Producción |
 |----------|-----------|----------------|
 | Frontend | http://localhost:3000 | https://vendly-frontend.vercel.app |
-| Backend API | http://localhost:8000 | https://vendly-api.onrender.com |
-| API Docs | http://localhost:8000/docs | https://vendly-api.onrender.com/docs |
-| Health | http://localhost:8000/api/v1/health | https://vendly-api.onrender.com/api/v1/health |
+| Backend API | http://localhost:8000 | https://vendly-backend-uuos.onrender.com |
+| API Docs | http://localhost:8000/docs | Deshabilitado (`DEBUG=false`) |
+| Health | http://localhost:8000/api/v1/health | https://vendly-backend-uuos.onrender.com/api/v1/health |
+
+`/docs` y `/redoc` solo existen con `DEBUG=true`; en producción devuelven 404 a
+propósito (`main.py`).
 
 ---
 
 ## COMANDOS RÁPIDOS
 
-### Desplegar Frontend (si tienes Vercel CLI)
+### Desplegar Backend
+
+```bash
+cd vendly-backend
+git push origin main
+```
+
+`render.yaml` no declara `autoDeploy`, así que depende de cómo esté configurado
+el servicio en el dashboard. Confirmar en Dashboard → Events que hay un deploy
+nuevo; si no, lanzarlo con "Manual Deploy".
+
+### Desplegar Frontend
+
 ```bash
 cd vendly-frontend
 vercel --prod
-```
-
-### Desplegar Backend (Git push)
-```bash
-git add .
-git commit -m "Ready for deployment"
-git push origin main
-
-# Render se actualiza automáticamente
 ```
 
 ---
 
 ## CHECKLIST POST-DESPLIEGUE
 
-- [ ] Backend responde en URL de producción
-- [ ] Frontend carga sin errores
+- [ ] `/api/v1/health` responde con `supabase: connected` y `redis: connected`
+- [ ] En los logs aparece `Schema check passed`, sin `Schema drift`
+- [ ] `python scripts/migrate.py --status` no muestra migraciones pendientes
+- [ ] Frontend carga sin errores de CORS
 - [ ] Login funciona (Supabase Auth)
 - [ ] Registro de vendedor funciona
 - [ ] Crear producto funciona
 - [ ] Storefront público carga
-- [ ] Carrito funciona
-- [ ] WhatsApp webhook recibe mensajes (si aplica)
+- [ ] Carrito funciona end to end: la API lo crea y el bot lo lee
+- [ ] Confirmar un pedido por WhatsApp crea filas en `orders` y en `order_items`
+- [ ] El webhook de Meta recibe mensajes
 
 ---
 
 ## SOLUCIÓN DE PROBLEMAS
 
-### Build falla en Vercel
-```bash
-# Verificar build local primero
-cd vendly-frontend
-npm run build
-
-# Si hay errores de TypeScript, corregirlos
-```
-
 ### Build falla en Render
-```bash
-# Verificar que main.py está en root
-cd vendly-backend
-ls main.py
 
-# Verificar que uvicorn está en requirements.txt
+```bash
+cd vendly-backend
+ls main.py                      # tiene que estar en la raíz del repo
 grep uvicorn requirements.txt
 ```
 
+### El health check de Render falla pero la app parece arrancar
+
+El start command tiene que usar `$PORT`. Con un puerto fijo, Render no encuentra
+el servicio escuchando donde espera.
+
+### "Carrito expirado" o carritos vacíos
+
+Casi siempre es Upstash, y falla en silencio. Revisar que
+`UPSTASH_REDIS_URL` / `UPSTASH_REDIS_TOKEN` en Render sean el endpoint **REST** y
+que el host resuelva. Desde la 020 el API devuelve **503** en lugar de 404 cuando
+Redis no contesta, así que el código de estado distingue "no existe" de "Redis
+caído".
+
+### `scripts/migrate.py` no conecta
+
+Tres cosas, verificadas contra este proyecto:
+
+- `db.<ref>.supabase.co` es **IPv6-only** y no resuelve en una red IPv4. Usar el
+  pooler.
+- El prefijo del pooler es **`aws-1`**, no `aws-0`. `aws-0` acepta la conexión
+  TCP y después responde `(ENOTFOUND) tenant/user postgres.<ref> not found`, que
+  se lee como un problema de credenciales y no lo es.
+- Solo el puerto **6543** es alcanzable; el 5432 hace timeout. El 6543 es modo
+  transacción y corre el DDL de `migrate.py` sin problema.
+
+El password no es una API key: es el de la base, en Supabase → Project Settings →
+Database. No se puede ver, solo resetear — y resetearlo no rompe la app, que se
+conecta por API key.
+
 ### CORS Error
-```python
-# En main.py, asegurar que FRONTEND_URL está en allow_origins
-allow_origins=[
-    "https://vendly-frontend.vercel.app",  # URL de producción
-    "http://localhost:3000",               # Desarrollo
-]
-```
+
+Revisar `FRONTEND_URL` en Render y `allow_origins` en `main.py`.
 
 ---
 
-**Guía creada**: Abril 2025
-**Proyecto**: Vendly MVP
+**Última revisión**: julio 2026
+**Proyecto**: Vendly Pro
