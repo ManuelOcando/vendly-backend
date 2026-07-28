@@ -33,7 +33,18 @@ except ImportError:
         '  pip install "psycopg[binary]"'
     )
 
-MIGRATIONS_DIR = Path(__file__).parent.parent / "db" / "migrations"
+BACKEND_ROOT = Path(__file__).parent.parent
+MIGRATIONS_DIR = BACKEND_ROOT / "db" / "migrations"
+
+# The error message below tells the reader to put DATABASE_URL in .env, so read
+# it. Without this the script only ever saw real environment variables and told
+# people to do something that did nothing.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(BACKEND_ROOT / ".env")
+except ImportError:
+    pass
 
 CREATE_TRACKING_TABLE = """
 CREATE TABLE IF NOT EXISTS schema_migrations (

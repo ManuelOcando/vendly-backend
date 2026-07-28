@@ -48,6 +48,16 @@ except ImportError:
     )
 
 BACKEND_ROOT = Path(__file__).parent.parent
+
+# Same reason as scripts/migrate.py: the error message points at .env, so .env
+# has to actually be read.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(BACKEND_ROOT / ".env")
+except ImportError:
+    pass
+
 SKIP_DIRS = {".git", "venv", ".venv", "__pycache__", "node_modules"}
 
 # Files whose whole purpose is to contain queries this script should hate.
