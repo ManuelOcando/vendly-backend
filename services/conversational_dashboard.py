@@ -151,45 +151,34 @@ class ConversationalDashboard:
             
             # Get today's orders
             orders_result = self.db.table("orders").select(
-                "id, total, status, created_at"
+                "id, total, status, created_at, customer_phone"
             ).eq("tenant_id", tenant_id).gte("created_at", today_str).execute()
-            
+
             orders = orders_result.data if orders_result.data else []
-            
+
             # Calculate metrics
             total_orders = len(orders)
             completed_orders = len([o for o in orders if o["status"] in ["completed", "delivered"]])
             pending_orders = len([o for o in orders if o["status"] in ["pending", "payment_pending"]])
             total_revenue = sum(float(o.get("total", 0) or 0) for o in orders if o["status"] in ["completed", "delivered"])
-            
-            # Get new customers (first order today)
-            new_customers = set()
-            for order in orders:
-                # Get customer phone from order
-                order_details = self.db.table("order_details").select(
-                    "customer_phone"
-                ).eq("order_id", order["id"]).execute()
-                
-                if order_details.data:
-                    # Check if this is their first order
-                    customer_phone = order_details.data[0]["customer_phone"]
-                    previous_orders = self.db.table("orders").select("id").eq(
-                        "tenant_id", tenant_id
-                    ).lt("created_at", today_str).execute()
-                    
-                    # Check if customer has previous orders
-                    has_previous = False
-                    for prev_order in previous_orders.data:
-                        prev_details = self.db.table("order_details").select(
-                            "customer_phone"
-                        ).eq("order_id", prev_order["id"]).execute()
-                        
-                        if prev_details.data and prev_details.data[0]["customer_phone"] == customer_phone:
-                            has_previous = True
-                            break
-                    
-                    if not has_previous:
-                        new_customers.add(customer_phone)
+
+            # Get new customers (first order today). The phone lives on the
+            # order itself, so this is two queries rather than one per pair of
+            # orders.
+            previous_orders = self.db.table("orders").select("customer_phone").eq(
+                "tenant_id", tenant_id
+            ).lt("created_at", today_str).execute()
+
+            returning_phones = {
+                o["customer_phone"]
+                for o in (previous_orders.data or [])
+                if o.get("customer_phone")
+            }
+            new_customers = {
+                o["customer_phone"]
+                for o in orders
+                if o.get("customer_phone") and o["customer_phone"] not in returning_phones
+            }
             
             # Calculate average order value
             avg_order_value = total_revenue / completed_orders if completed_orders > 0 else 0
@@ -529,23 +518,19 @@ class ConversationalDashboard:
             # Check for recent orders from VIP customers (last 24 hours)
             twenty_four_hours_ago = (datetime.now() - timedelta(hours=24)).isoformat()
             
-            recent_vip_orders = []
-            for vip in vip_customers:
-                orders_result = self.db.table("orders").select(
-                    "id, total, created_at"
-                ).eq("tenant_id", tenant_id).gte("created_at", twenty_four_hours_ago).execute()
-                
-                # Check if any order belongs to this VIP customer
-                for order in orders_result.data:
-                    order_details = self.db.table("order_details").select(
-                        "customer_phone"
-                    ).eq("order_id", order["id"]).execute()
-                    
-                    if order_details.data and order_details.data[0]["customer_phone"] == vip["phone_number"]:
-                        recent_vip_orders.append({
-                            "customer": vip,
-                            "order": order
-                        })
+            # One query for the window, then match by the phone on the order
+            # itself rather than re-querying per customer per order.
+            orders_result = self.db.table("orders").select(
+                "id, total, created_at, customer_phone"
+            ).eq("tenant_id", tenant_id).gte("created_at", twenty_four_hours_ago).execute()
+
+            vip_by_phone = {vip["phone_number"]: vip for vip in vip_customers}
+
+            recent_vip_orders = [
+                {"customer": vip_by_phone[order["customer_phone"]], "order": order}
+                for order in (orders_result.data or [])
+                if order.get("customer_phone") in vip_by_phone
+            ]
             
             if not recent_vip_orders:
                 return None
