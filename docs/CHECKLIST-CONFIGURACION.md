@@ -118,8 +118,10 @@ INSERT INTO whatsapp_configs (
 
 - [ ] En Meta Developers → App → WhatsApp → Configuration
 - [ ] Sección "Webhooks" → Click "Edit"
-- [ ] Callback URL: `https://vendly-backend-uuos.onrender.com/webhook/whatsapp`
-- [ ] Verify Token: `vendly-webhook-secret`
+- [ ] Callback URL: `https://vendly-backend-uuos.onrender.com/api/v1/whatsapp/webhook`
+      (la ruta es `/api/v1/whatsapp/webhook`; este documento decía
+      `/webhook/whatsapp`, que no existe y devuelve 404)
+- [ ] Verify Token: el valor de `META_WEBHOOK_VERIFY_TOKEN` en Render
 - [ ] Click "Verify and Save"
 - [ ] Subscribe to events:
   - ✅ `messages`
@@ -186,8 +188,8 @@ META CREDENTIALS:
 - Número WhatsApp: _________________________
 
 WEBHOOK:
-- URL: https://vendly-backend-uuos.onrender.com/webhook/whatsapp
-- Verify Token: vendly-webhook-secret
+- URL: https://vendly-backend-uuos.onrender.com/api/v1/whatsapp/webhook
+- Verify Token: (el mismo que META_WEBHOOK_VERIFY_TOKEN en Render)
 - Status: ✅ Activo
 
 NOTAS:

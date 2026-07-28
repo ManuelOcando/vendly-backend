@@ -475,7 +475,8 @@ docker-compose up -d  # Inicia PostgreSQL + Redis + Backend
 | /api/v1/cart/create | POST | No | Crear carrito |
 | /api/v1/cart/{cart_id} | GET | No | Ver carrito |
 | /api/v1/whatsapp/connect | POST | Sí | Conectar WA |
-| /api/v1/whatsapp/webhook | POST | No | Webhook Evolution |
+| /api/v1/whatsapp/webhook | GET | No | Verificación del webhook (Meta) |
+| /api/v1/whatsapp/webhook | POST | No | Webhook Meta Cloud API |
 
 ---
 
@@ -484,8 +485,11 @@ docker-compose up -d  # Inicia PostgreSQL + Redis + Backend
 1. **Autenticación**: El frontend usa Supabase Auth. El backend valida tokens JWT.
 2. **CORS**: Configurado para permitir localhost y dominios de Vercel/Render.
 3. **Carrito Redis**: TTL de 15 minutos. Stock bloqueado temporalmente.
-4. **WhatsApp**: Evolution API corre en puerto 8080 por defecto.
-5. **Webhooks**: El webhook de Evolution debe apuntar a `/api/v1/whatsapp/webhook`.
+4. **WhatsApp**: Meta WhatsApp Cloud API. Evolution API se eliminó en la
+   migración 008; el resto de este documento todavía la menciona en varios
+   lugares y está desactualizado en eso.
+5. **Webhooks**: El webhook de Meta debe apuntar a `/api/v1/whatsapp/webhook`.
+   Meta valida con un `GET` a esa misma URL antes de aceptarla.
 6. **Estados del Bot**: La sesión del bot se guarda en `conversation_sessions`.
 7. **Pedidos**: Se crean inicialmente con status `pending_payment`.
 8. **Imágenes**: Se almacenan URLs en array `images[]`, no archivos binarios.
