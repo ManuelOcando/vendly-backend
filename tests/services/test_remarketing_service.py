@@ -132,8 +132,11 @@ class TestRemarketingService:
             sample_customer_profile.model_dump()
         ]
         
-        # Mock WhatsApp send_message
-        remarketing_service.whatsapp_service.send_message = AsyncMock(return_value={
+        # A plain Mock, not AsyncMock: MetaWhatsAppService.send_message is
+        # synchronous and the service calls it through asyncio.to_thread.
+        # Mocking it as a coroutine is what let the code await a dict for
+        # months without a single test noticing.
+        remarketing_service.whatsapp_service.send_message = Mock(return_value={
             "status": "sent",
             "message_id": "message-123"
         })
@@ -162,8 +165,11 @@ class TestRemarketingService:
             Mock(data=[sample_loyalty_account.model_dump()])
         ]
         
-        # Mock WhatsApp send_message
-        remarketing_service.whatsapp_service.send_message = AsyncMock(return_value={
+        # A plain Mock, not AsyncMock: MetaWhatsAppService.send_message is
+        # synchronous and the service calls it through asyncio.to_thread.
+        # Mocking it as a coroutine is what let the code await a dict for
+        # months without a single test noticing.
+        remarketing_service.whatsapp_service.send_message = Mock(return_value={
             "status": "sent",
             "message_id": "message-123"
         })
@@ -216,8 +222,11 @@ class TestRemarketingService:
             suggested_at=datetime.now()
         )
         
-        # Mock WhatsApp send_message
-        remarketing_service.whatsapp_service.send_message = AsyncMock(return_value={
+        # A plain Mock, not AsyncMock: MetaWhatsAppService.send_message is
+        # synchronous and the service calls it through asyncio.to_thread.
+        # Mocking it as a coroutine is what let the code await a dict for
+        # months without a single test noticing.
+        remarketing_service.whatsapp_service.send_message = Mock(return_value={
             "status": "sent",
             "message_id": "message-123"
         })
@@ -277,8 +286,11 @@ class TestRemarketingService:
             status="pending"
         )
         
-        # Mock WhatsApp send_message
-        remarketing_service.whatsapp_service.send_message = AsyncMock(return_value={
+        # A plain Mock, not AsyncMock: MetaWhatsAppService.send_message is
+        # synchronous and the service calls it through asyncio.to_thread.
+        # Mocking it as a coroutine is what let the code await a dict for
+        # months without a single test noticing.
+        remarketing_service.whatsapp_service.send_message = Mock(return_value={
             "status": "sent",
             "message_id": "message-123"
         })

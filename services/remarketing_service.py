@@ -3,6 +3,7 @@ Remarketing Service for Vendly Pro
 Implements inactivity reminders, repeat order suggestions, and new product notifications
 """
 from typing import Dict, Any, Optional, List
+import asyncio
 import logging
 from datetime import datetime, date, timedelta
 from dataclasses import dataclass
@@ -190,9 +191,10 @@ class RemarketingService:
             # Send via WhatsApp
             whatsapp = self._get_whatsapp_service()
             if whatsapp:
-                result = await whatsapp.send_message(
-                    to=customer_phone,
-                    message=message
+                # send_message is synchronous and blocking; awaiting its dict
+                # raised TypeError, so no remarketing message was ever sent.
+                result = await asyncio.to_thread(
+                    whatsapp.send_message, customer_phone, message
                 )
                 
                 if result.get("status") == "sent":
@@ -313,9 +315,10 @@ class RemarketingService:
             # Send via WhatsApp
             whatsapp = self._get_whatsapp_service()
             if whatsapp:
-                result = await whatsapp.send_message(
-                    to=customer_phone,
-                    message=message
+                # send_message is synchronous and blocking; awaiting its dict
+                # raised TypeError, so no remarketing message was ever sent.
+                result = await asyncio.to_thread(
+                    whatsapp.send_message, customer_phone, message
                 )
                 
                 if result.get("status") == "sent":
@@ -420,9 +423,10 @@ class RemarketingService:
             # Send via WhatsApp
             whatsapp = self._get_whatsapp_service()
             if whatsapp:
-                result = await whatsapp.send_message(
-                    to=customer_phone,
-                    message=message
+                # send_message is synchronous and blocking; awaiting its dict
+                # raised TypeError, so no remarketing message was ever sent.
+                result = await asyncio.to_thread(
+                    whatsapp.send_message, customer_phone, message
                 )
                 
                 if result.get("status") == "sent":

@@ -453,7 +453,7 @@ class MetaWhatsAppBotService:
                 
                 # Get seller phone to send alerts
                 config_result = self.db.table("whatsapp_configs").select(
-                    "seller_phone, phone_number, phone_number_id"
+                    "seller_phone, phone_number, phone_number_id, access_token"
                 ).eq("tenant_id", tenant_id).execute()
                 
                 if config_result.data:
@@ -462,18 +462,34 @@ class MetaWhatsAppBotService:
                     phone_number_id = config.get("phone_number_id")
                     
                     if seller_phone and phone_number_id:
-                        # Send alerts via WhatsApp service
+                        # The tenant's own credentials, and send_message takes
+                        # only (to, message). This used to build the service with
+                        # no arguments - falling back to the global
+                        # META_WHATSAPP_PHONE_ID - then pass phone_number_id= as
+                        # a keyword and await it. send_message is synchronous and
+                        # has no such parameter, so every call raised TypeError
+                        # and no alert was ever delivered.
                         from services.whatsapp.meta_service import MetaWhatsAppService
-                        whatsapp_service = MetaWhatsAppService()
-                        
+
+                        whatsapp_service = MetaWhatsAppService(
+                            phone_number_id=phone_number_id,
+                            access_token=config.get("access_token"),
+                        )
+
                         for alert_message in alerts:
                             if alert_message:
-                                await whatsapp_service.send_message(
-                                    phone_number_id=phone_number_id,
-                                    to=seller_phone,
-                                    message=alert_message
+                                result = await asyncio.to_thread(
+                                    whatsapp_service.send_message,
+                                    seller_phone,
+                                    alert_message,
                                 )
-                                logger.info(f"Alert sent to seller {seller_phone}")
+                                if result.get("status") == "sent":
+                                    logger.info(f"Alert sent to seller {seller_phone}")
+                                else:
+                                    logger.error(
+                                        "Alert to %s failed: %s",
+                                        seller_phone, result.get("error"),
+                                    )
             
         except Exception as e:
             logger.error(f"Error checking alerts in background: {e}")

@@ -148,26 +148,48 @@ class AlertScheduler:
         try:
             # Get WhatsApp phone number ID for this tenant
             config_result = self.db.table("whatsapp_configs").select(
-                "phone_number_id"
+                "phone_number_id, access_token"
             ).eq("tenant_id", tenant_id).execute()
-            
+
             if not config_result.data:
                 logger.error(f"WhatsApp config not found for tenant {tenant_id}")
                 return
-            
+
             phone_number_id = config_result.data[0].get("phone_number_id")
-            
+            access_token = config_result.data[0].get("access_token")
+
             if not phone_number_id:
                 logger.error(f"No phone_number_id found for tenant {tenant_id}")
                 return
-            
-            # Send message via Meta WhatsApp API
-            success = await self.whatsapp_service.send_message(
+
+            # Credentials go to the constructor and send_message takes only
+            # (to, message). This used to pass phone_number_id= as a keyword and
+            # await the result, so every call raised TypeError twice over -
+            # send_message is synchronous and has no such parameter. No seller
+            # alert had ever been delivered.
+            #
+            # Built per tenant rather than reusing self.whatsapp_service, which
+            # was constructed with no arguments and therefore fell back to the
+            # global META_WHATSAPP_PHONE_ID - the wrong number for every tenant
+            # but one.
+            whatsapp_service = MetaWhatsAppService(
                 phone_number_id=phone_number_id,
-                to=seller_phone,
-                message=alert_message
+                access_token=access_token,
             )
-            
+
+            # requests.post blocks; off the loop so a 30s timeout cannot stall
+            # the scheduler.
+            result = await asyncio.to_thread(
+                whatsapp_service.send_message, seller_phone, alert_message
+            )
+            success = result.get("status") == "sent"
+
+            if not success:
+                logger.error(
+                    "Alert to %s failed for tenant %s: %s",
+                    seller_phone, tenant_id, result.get("error"),
+                )
+
             if success:
                 logger.info(f"Alert sent to seller {seller_phone} for tenant {tenant_name}")
                 
