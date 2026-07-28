@@ -3,14 +3,17 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
 import uuid
-import redis
 import json
+
+from db.redis import get_redis_client
 
 router = APIRouter()
 
-# Redis connection for cart locks and temporary data
-# TODO: Configurar Redis en producción
-REDIS_CLIENT = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+# Carts and stock locks live in Upstash Redis, the same store the WhatsApp bot
+# reads from in services/whatsapp/handlers/customer.py (_get_cart_from_redis).
+# This used to point at redis://localhost:6379, which does not exist on Render,
+# so every cart written here was invisible to the bot.
+REDIS_CLIENT = get_redis_client()
 
 class CartItem(BaseModel):
     item_id: str
@@ -55,13 +58,13 @@ async def create_cart(request: CreateCartRequest):
         
         # Guardar en Redis con TTL de 15 minutos
         cart_data = cart.model_dump_json()
-        REDIS_CLIENT.setex(f"cart:{cart_id}", 900, cart_data)  # 900 seconds = 15 min
-        
+        await REDIS_CLIENT.setex(f"cart:{cart_id}", 900, cart_data)  # 900 seconds = 15 min
+
         # Bloquear stock en Redis
         for item in request.items:
             stock_key = f"stock_lock:{request.store_id}:{item.item_id}"
-            REDIS_CLIENT.incrby(stock_key, item.quantity)
-            REDIS_CLIENT.expire(stock_key, 900)  # 15 min
+            await REDIS_CLIENT.incrby(stock_key, item.quantity)
+            await REDIS_CLIENT.expire(stock_key, 900)  # 15 min
         
         return {
             "cart_id": cart_id,
@@ -78,19 +81,19 @@ async def get_cart(cart_id: str):
     """Obtener carrito por ID"""
     
     try:
-        cart_data = REDIS_CLIENT.get(f"cart:{cart_id}")
-        
+        cart_data = await REDIS_CLIENT.get(f"cart:{cart_id}")
+
         if not cart_data:
             raise HTTPException(status_code=404, detail="Cart not found or expired")
-        
+
         cart = json.loads(cart_data)
-        
+
         # Verificar si no ha expirado
         expires_at = datetime.fromisoformat(cart["expires_at"])
         if datetime.utcnow() > expires_at:
             # Liberar locks de stock
             await release_stock_locks(cart["store_id"], cart["items"])
-            REDIS_CLIENT.delete(f"cart:{cart_id}")
+            await REDIS_CLIENT.delete(f"cart:{cart_id}")
             raise HTTPException(status_code=410, detail="Cart expired")
         
         return cart
@@ -105,13 +108,13 @@ async def add_to_cart(cart_id: str, request: AddItemRequest):
     """Agregar item al carrito existente"""
     
     try:
-        cart_data = REDIS_CLIENT.get(f"cart:{cart_id}")
-        
+        cart_data = await REDIS_CLIENT.get(f"cart:{cart_id}")
+
         if not cart_data:
             raise HTTPException(status_code=404, detail="Cart not found or expired")
-        
+
         cart = json.loads(cart_data)
-        
+
         # Verificar expiración
         expires_at = datetime.fromisoformat(cart["expires_at"])
         if datetime.utcnow() > expires_at:
@@ -142,11 +145,11 @@ async def add_to_cart(cart_id: str, request: AddItemRequest):
         
         # Actualizar locks de stock
         stock_key = f"stock_lock:{cart['store_id']}:{request.item_id}"
-        REDIS_CLIENT.incrby(stock_key, request.quantity)
-        REDIS_CLIENT.expire(stock_key, 900)
-        
+        await REDIS_CLIENT.incrby(stock_key, request.quantity)
+        await REDIS_CLIENT.expire(stock_key, 900)
+
         # Guardar carrito actualizado
-        REDIS_CLIENT.setex(f"cart:{cart_id}", 900, json.dumps(cart))
+        await REDIS_CLIENT.setex(f"cart:{cart_id}", 900, json.dumps(cart))
         
         return {
             "cart": cart,
@@ -163,15 +166,15 @@ async def set_customer_phone(cart_id: str, phone: str):
     """Establecer teléfono del cliente"""
     
     try:
-        cart_data = REDIS_CLIENT.get(f"cart:{cart_id}")
-        
+        cart_data = await REDIS_CLIENT.get(f"cart:{cart_id}")
+
         if not cart_data:
             raise HTTPException(status_code=404, detail="Cart not found or expired")
-        
+
         cart = json.loads(cart_data)
         cart["customer_phone"] = phone
-        
-        REDIS_CLIENT.setex(f"cart:{cart_id}", 900, json.dumps(cart))
+
+        await REDIS_CLIENT.setex(f"cart:{cart_id}", 900, json.dumps(cart))
         
         return {"message": "Customer phone updated"}
         
@@ -185,14 +188,14 @@ async def delete_cart(cart_id: str):
     """Eliminar carrito y liberar locks de stock"""
     
     try:
-        cart_data = REDIS_CLIENT.get(f"cart:{cart_id}")
-        
+        cart_data = await REDIS_CLIENT.get(f"cart:{cart_id}")
+
         if cart_data:
             cart = json.loads(cart_data)
             # Liberar locks de stock
             await release_stock_locks(cart["store_id"], cart["items"])
-        
-        REDIS_CLIENT.delete(f"cart:{cart_id}")
+
+        await REDIS_CLIENT.delete(f"cart:{cart_id}")
         
         return {"message": "Cart deleted successfully"}
         
@@ -204,18 +207,18 @@ async def release_stock_locks(store_id: str, items: List[Dict[str, Any]]):
     
     for item in items:
         stock_key = f"stock_lock:{store_id}:{item['item_id']}"
-        REDIS_CLIENT.decrby(stock_key, item["quantity"])
+        await REDIS_CLIENT.decrby(stock_key, item["quantity"])
 
 @router.get("/{cart_id}/stock-status")
 async def get_cart_stock_status(cart_id: str):
     """Verificar disponibilidad de stock para items del carrito"""
     
     try:
-        cart_data = REDIS_CLIENT.get(f"cart:{cart_id}")
-        
+        cart_data = await REDIS_CLIENT.get(f"cart:{cart_id}")
+
         if not cart_data:
             raise HTTPException(status_code=404, detail="Cart not found or expired")
-        
+
         cart = json.loads(cart_data)
         stock_status = []
         
@@ -223,7 +226,7 @@ async def get_cart_stock_status(cart_id: str):
         # Por ahora, asumimos que hay stock disponible
         
         for item in cart["items"]:
-            locked_quantity = int(REDIS_CLIENT.get(f"stock_lock:{cart['store_id']}:{item['item_id']}") or 0)
+            locked_quantity = int(await REDIS_CLIENT.get(f"stock_lock:{cart['store_id']}:{item['item_id']}") or 0)
             
             stock_status.append({
                 "item_id": item["item_id"],
