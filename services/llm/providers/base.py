@@ -76,7 +76,9 @@ class LLMProvider(ABC):
 
         Args:
             store_name: Name of the store
-            personality: Dict with 'tone', 'use_emojis', 'greeting_style'
+            personality: Dict with 'tone', 'use_emojis', 'greeting_style', and
+                optionally 'custom_prompt' - a hand-written prompt that replaces
+                those three. Built by services.bot_personalities.resolve_personality.
             available_products: List of available products
             language: Language code the assistant must reply in (es/en/pt).
                 Keyword with a default so existing call sites keep working.

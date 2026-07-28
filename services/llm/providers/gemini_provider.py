@@ -225,14 +225,26 @@ class GeminiProvider(LLMProvider):
 
         emoji_instruction = "Usa emojis apropiados." if use_emojis else "No uses emojis."
 
+        # A tenant with a hand-written prompt gets it verbatim in place of the
+        # preset knobs; see services/bot_personalities.py. The length limit is
+        # not a personality trait - WhatsApp needs short replies either way - so
+        # it stays in both branches.
+        custom_prompt = personality.get("custom_prompt")
+        if custom_prompt:
+            personality_lines = f"{custom_prompt}\n- Respuestas cortas (máx 2-3 líneas)"
+        else:
+            personality_lines = (
+                f"- Tono: {tone}\n"
+                f"- {emoji_instruction}\n"
+                f"- Saludo: {greeting_style.format(store_name=store_name)}\n"
+                f"- Respuestas cortas (máx 2-3 líneas)"
+            )
+
         prompt = f"""{_language_directive(language)}
 Eres un asistente de ventas para {store_name}.
 
 PERSONALIDAD:
-- Tono: {tone}
-- {emoji_instruction}
-- Saludo: {greeting_style.format(store_name=store_name)}
-- Respuestas cortas (máx 2-3 líneas)
+{personality_lines}
 
 PRODUCTOS DISPONIBLES:
 {products_text}

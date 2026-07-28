@@ -120,13 +120,23 @@ class OpenRouterProvider(LLMProvider):
 
         emoji_instruction = "Usa emojis apropiados." if use_emojis else "No uses emojis, mantén profesional."
 
+        # A tenant with a hand-written prompt gets it verbatim in place of the
+        # preset knobs; see services/bot_personalities.py.
+        custom_prompt = personality.get("custom_prompt")
+        if custom_prompt:
+            personality_lines = custom_prompt
+        else:
+            personality_lines = (
+                f"- Tono: {tone}\n"
+                f"- {emoji_instruction}\n"
+                f"- Saludo típico: {greeting_style.format(store_name=store_name)}"
+            )
+
         prompt = f"""{_language_directive(language)}
 Eres un asistente virtual de {store_name}.
 
 PERSONALIDAD:
-- Tono: {tone}
-- {emoji_instruction}
-- Saludo típico: {greeting_style.format(store_name=store_name)}
+{personality_lines}
 
 PRODUCTOS DISPONIBLES:
 {products_text}

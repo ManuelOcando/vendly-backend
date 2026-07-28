@@ -8,6 +8,7 @@ import json
 from datetime import datetime
 
 from .base import BaseWhatsAppHandler
+from services.bot_personalities import resolve_personality
 from services.llm import get_llm_provider, LLMProvider
 from services.i18n import DEFAULT_LANGUAGE, matches_intent, t
 from config import get_settings
@@ -112,10 +113,12 @@ class LLMHandler(BaseWhatsAppHandler):
             personality = await self._get_personality(tenant_id)
             logger.info(f"✅ Personality: {personality.get('tone', 'casual')}")
             
-            # Get LLM provider (supports tenant-specific config)
+            # Get LLM provider. Per-tenant provider config is not a feature yet:
+            # this used to look up whatsapp_configs.llm_config, a column that
+            # exists in no table, so the lookup only ever fed its own except and
+            # the provider came from settings regardless.
             logger.info("🤖 Getting LLM provider...")
-            tenant_config = await self._get_tenant_llm_config(tenant_id)
-            provider = get_llm_provider(tenant_config)
+            provider = get_llm_provider()
             
             if not provider:
                 logger.error("❌ Could not create LLM provider")
@@ -249,47 +252,31 @@ class LLMHandler(BaseWhatsAppHandler):
             return []
     
     async def _get_personality(self, tenant_id: str) -> Dict[str, Any]:
-        """Get bot personality configuration for tenant"""
-        settings = get_settings()
-        
+        """Get bot personality configuration for tenant.
+
+        Reads the tenants row and lets services.bot_personalities decide: a
+        hand-written prompt wins, then the chosen preset, then the industry
+        default, then the settings defaults.
+
+        This used to select bot_personality from whatsapp_configs, where the
+        column does not exist, and json.loads() the result. PostgREST rejected
+        the select, and the column it meant to read holds prose rather than
+        JSON, so per-tenant personality had never worked - every tenant got the
+        settings defaults.
+        """
         try:
-            # Try to get from tenant config
-            result = self.db.table("whatsapp_configs").select(
-                "bot_personality"
-            ).eq("tenant_id", tenant_id).execute()
-            
-            if result.data and result.data[0].get("bot_personality"):
-                personality = result.data[0]["bot_personality"]
-                if isinstance(personality, str):
-                    personality = json.loads(personality)
-                return personality
+            result = self.db.table("tenants").select(
+                "bot_personality, bot_personality_preset, type"
+            ).eq("id", tenant_id).execute()
+
+            if result.data:
+                return resolve_personality(result.data[0])
         except Exception as e:
-            logger.warning(f"Could not load personality config: {e}")
-        
-        # Return defaults
-        return {
-            "tone": settings.BOT_DEFAULT_TONE,
-            "use_emojis": settings.BOT_DEFAULT_EMOJIS,
-            "greeting_style": settings.BOT_DEFAULT_GREETING
-        }
-    
-    async def _get_tenant_llm_config(self, tenant_id: str) -> Optional[Dict[str, Any]]:
-        """Get tenant-specific LLM configuration"""
-        try:
-            result = self.db.table("whatsapp_configs").select(
-                "llm_config"
-            ).eq("tenant_id", tenant_id).execute()
-            
-            if result.data and result.data[0].get("llm_config"):
-                config = result.data[0]["llm_config"]
-                if isinstance(config, str):
-                    config = json.loads(config)
-                return config
-        except Exception as e:
-            logger.warning(f"Could not load tenant LLM config: {e}")
-        
-        return None
-    
+            logger.error(f"Could not load personality config: {e}", exc_info=True)
+
+        return resolve_personality(None)
+
+
     def _any_product_needs_confirmation(self, products: List[Dict[str, Any]], provider: LLMProvider) -> bool:
         """Check if any product requires confirmation"""
         for product in products:
