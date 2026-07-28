@@ -12,9 +12,15 @@ import re
 from datetime import datetime
 
 from .base import BaseWhatsAppHandler
+from services.bot_personalities import PRESETS, default_preset_for_industry, preset_names
+from services.multi_tenant_orchestrator import MultiTenantOrchestrator
 from services.offline_mode_service import OfflineModeService, parse_weekly_schedule
 
 logger = logging.getLogger(__name__)
+
+# International phone format, shared by the business number and the owner's
+# personal alert number.
+PHONE_RE = r'^\+?[1-9]\d{1,14}$'
 
 
 class OnboardingState:
@@ -23,6 +29,7 @@ class OnboardingState:
     BUSINESS_INFO = "onboarding_business_info"
     INDUSTRY_SELECTION = "onboarding_industry_selection"
     BUSINESS_HOURS = "onboarding_business_hours"
+    PERSONALITY = "onboarding_personality"
     PRODUCT_UPLOAD = "onboarding_product_upload"
     PRODUCT_DESCRIPTION = "onboarding_product_description"
     PRODUCT_PHOTO = "onboarding_product_photo"
@@ -67,7 +74,13 @@ class OnboardingHandler(BaseWhatsAppHandler):
         """Handle onboarding messages"""
         tenant_id = message_data.get("tenant_id")
         phone = message_data.get("phone")
-        message = message_data.get("message", "").lower().strip()
+        # Kept as typed. The business name, description and product names are
+        # content, not keywords, and folding the whole message to lowercase
+        # stored "El Sabor de Maria" as "el sabor de maria". Every handler that
+        # matches keywords lowercases on its own, and both free-text parsers
+        # (parse_weekly_schedule, _parse_product_info) are already
+        # case-insensitive, so nothing downstream relied on it happening here.
+        message = message_data.get("message", "").strip()
         session = message_data.get("session", {})
         
         # Get or create onboarding session
@@ -86,6 +99,8 @@ class OnboardingHandler(BaseWhatsAppHandler):
             return await self._handle_business_info(tenant_id, phone, message, onboarding_data)
         elif current_state == OnboardingState.BUSINESS_HOURS:
             return await self._handle_business_hours(tenant_id, phone, message, onboarding_data)
+        elif current_state == OnboardingState.PERSONALITY:
+            return await self._handle_personality(tenant_id, phone, message, onboarding_data)
         elif current_state == OnboardingState.PRODUCT_UPLOAD:
             return await self._handle_product_upload(tenant_id, phone, message, onboarding_data)
         elif current_state == OnboardingState.PRODUCT_DESCRIPTION:
@@ -146,9 +161,14 @@ Por favor, elige una opción válida:
 
 Escribe el número (1, 2 o 3) o el nombre del tipo de negocio."""
         
-        # Save industry selection
+        # Save industry selection in the session, and on the tenant itself:
+        # tenants.type is what picks the default bot personality for the
+        # industry (services/bot_personalities.py) and what the scheduling and
+        # storefront code reads. Keeping it only in the session meant every
+        # tenant stayed on whatever type it was created with.
         await self._update_onboarding_data(tenant_id, phone, {"industry": industry})
-        
+        await self._persist_tenant_fields(tenant_id, {"type": industry})
+
         # Move to next step
         await self._update_onboarding_state(tenant_id, phone, OnboardingState.BUSINESS_INFO)
         
@@ -160,15 +180,17 @@ Necesito algunos datos básicos de tu negocio:
 
 1️⃣ *Nombre del negocio* (ej: "El Sabor de Maria")
 2️⃣ *Descripción breve* (ej: "Restaurante familiar con comida venezolana")
-3️⃣ *Número de WhatsApp* (ej: +584123456789)
+3️⃣ *Número de WhatsApp del negocio* (ej: +584123456789)
+4️⃣ *Tu teléfono personal* (opcional) - donde querés recibir las alertas de tu negocio
 
-Puedes enviarme esta información en un solo mensaje o en mensajes separados.
+Si no pones el cuarto, te enviamos las alertas al mismo número del negocio.
 
 Ejemplo:
 ```
 El Sabor de Maria
 Restaurante familiar con comida venezolana auténtica
 +584123456789
++584249876543
 ```"""
     
     async def _handle_business_info(self, tenant_id: str, phone: str, message: str, onboarding_data: Dict) -> str:
@@ -181,7 +203,8 @@ Restaurante familiar con comida venezolana auténtica
 Por favor, envíame:
 1️⃣ Nombre del negocio
 2️⃣ Descripción breve
-3️⃣ Número de WhatsApp
+3️⃣ Número de WhatsApp del negocio
+4️⃣ Tu teléfono personal (opcional)
 
 Puedes enviarme esta información en un solo mensaje o en mensajes separados.
 
@@ -190,17 +213,21 @@ Ejemplo:
 El Sabor de Maria
 Restaurante familiar con comida venezolana auténtica
 +584123456789
++584249876543
 ```"""
-        
-        # Parse business info
+
+        # Parse business info. The 4th line is optional: it is the owner's own
+        # phone, where business alerts go. Empty means "same as the business
+        # number", which is what the seller_phone fallback already does.
         business_info = {
             "name": lines[0].strip(),
             "description": lines[1].strip() if len(lines) > 1 else "",
-            "whatsapp_number": lines[2].strip() if len(lines) > 2 else ""
+            "whatsapp_number": lines[2].strip() if len(lines) > 2 else "",
+            "seller_phone": lines[3].strip() if len(lines) > 3 else ""
         }
-        
+
         # Validate WhatsApp number format
-        if not re.match(r'^\+?[1-9]\d{1,14}$', business_info.get("whatsapp_number", "")):
+        if not re.match(PHONE_RE, business_info.get("whatsapp_number", "")):
             return """❌ *Número de WhatsApp inválido.*
 
 Por favor, envíame el número en formato internacional:
@@ -208,18 +235,39 @@ Por favor, envíame el número en formato internacional:
 - Incluye el signo + y el código de país
 
 Por favor, envía la información completa nuevamente."""
-        
-        # Save business info
+
+        if business_info["seller_phone"] and not re.match(PHONE_RE, business_info["seller_phone"]):
+            return """❌ *Tu teléfono personal es inválido.*
+
+Enviámelo en formato internacional (ej: +584249876543), o dejá la cuarta línea
+vacía para recibir las alertas en el mismo número del negocio.
+
+Por favor, envía la información completa nuevamente."""
+
+        # Save business info in the session, and persist it. Until now these
+        # three fields only ever lived in the session, so the name and
+        # description the seller typed here went nowhere.
         await self._update_onboarding_data(tenant_id, phone, {"business_info": business_info})
-        
+        await self._persist_tenant_fields(tenant_id, {
+            "name": business_info["name"],
+            "description": business_info["description"],
+            "whatsapp_number": business_info["whatsapp_number"],
+        })
+
+        if business_info["seller_phone"]:
+            await self._persist_seller_phone(tenant_id, business_info["seller_phone"])
+
         # Move to next step
         await self._update_onboarding_state(tenant_id, phone, OnboardingState.BUSINESS_HOURS)
-        
+
+        alerts_line = business_info["seller_phone"] or f"{business_info['whatsapp_number']} (el mismo del negocio)"
+
         return f"""✅ *¡Información guardada!*
 
 Nombre: {business_info['name']}
 Descripción: {business_info['description']}
 WhatsApp: {business_info['whatsapp_number']}
+Alertas a: {alerts_line}
 
 📋 *Paso 3: Horarios de Atención*
 
@@ -259,13 +307,72 @@ O si tienes horarios diferentes, envíame tu configuración y te ayudo a ajustar
         )
         
         # Move to next step
-        await self._update_onboarding_state(tenant_id, phone, OnboardingState.PRODUCT_UPLOAD)
-        
+        await self._update_onboarding_state(tenant_id, phone, OnboardingState.PERSONALITY)
+
+        industry = onboarding_data.get("industry")
+
         return f"""✅ *¡Horarios guardados!*
 
 {self._format_business_hours(hours_data)}
 
-📋 *Paso 4: Subir Productos*
+{self._personality_prompt(industry)}"""
+
+    def _personality_prompt(self, industry: Optional[str]) -> str:
+        """The personality question, with the industry's default marked.
+
+        Presented as a numbered list so answering takes one tap. Anything
+        unrecognised accepts the suggestion rather than re-asking - this is a
+        preference, not a required field.
+        """
+        suggested = default_preset_for_industry(industry)
+        digits = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
+
+        options = []
+        for index, name in enumerate(preset_names()):
+            preset = PRESETS[name]
+            mark = " ⭐ *(recomendado para tu rubro)*" if name == suggested else ""
+            options.append(
+                f"{digits[index]} *{preset['label']}*{mark}\n"
+                f'   _"{preset["sample"]}"_'
+            )
+
+        return "📋 *Paso 4: ¿Cómo querés que hable tu bot?*\n\n" + "\n\n".join(options) + (
+            "\n\nEscribe el número. Si no elegís, uso el recomendado."
+        )
+
+    async def _handle_personality(self, tenant_id: str, phone: str, message: str, onboarding_data: Dict) -> str:
+        """Handle the bot personality choice."""
+        choice = message.strip()
+        names = preset_names()
+
+        selected = None
+        if choice.isdigit() and 1 <= int(choice) <= len(names):
+            selected = names[int(choice) - 1]
+        else:
+            # Also accept the preset name itself, or its label.
+            lowered = choice.lower()
+            for name in names:
+                if lowered == name or lowered == PRESETS[name]["label"].lower():
+                    selected = name
+                    break
+
+        # No re-asking on an unrecognised answer: take the industry default and
+        # move on, so a confused seller is never stuck on a preference.
+        if selected is None:
+            selected = default_preset_for_industry(onboarding_data.get("industry"))
+
+        await self._update_onboarding_data(tenant_id, phone, {"bot_personality_preset": selected})
+        await self._persist_tenant_fields(tenant_id, {"bot_personality_preset": selected})
+
+        await self._update_onboarding_state(tenant_id, phone, OnboardingState.PRODUCT_UPLOAD)
+
+        preset = PRESETS[selected]
+
+        return f"""✅ *¡Listo! Tu bot va a hablar así:*
+
+_"{preset['sample']}"_
+
+📋 *Paso 5: Subir Productos*
 
 ¿Quieres subir productos ahora? Puedes hacerlo de dos formas:
 
@@ -275,7 +382,41 @@ O si tienes horarios diferentes, envíame tu configuración y te ayudo a ajustar
 Escribe:
 • "sí" o "subir productos" para comenzar
 • "no" o "después" para configurar más tarde"""
-    
+
+    async def _persist_tenant_fields(self, tenant_id: str, fields: Dict[str, Any]) -> None:
+        """Write onboarding answers onto the tenants row.
+
+        Never raises: losing a field is worse than losing the whole
+        conversation, but not worth dropping the seller out of onboarding.
+        """
+        try:
+            self.db.table("tenants").update({
+                **fields,
+                "updated_at": datetime.now().isoformat(),
+            }).eq("id", tenant_id).execute()
+        except Exception as e:
+            logger.error(
+                f"Could not persist {sorted(fields)} for tenant {tenant_id}: {e}",
+                exc_info=True,
+            )
+
+    async def _persist_seller_phone(self, tenant_id: str, seller_phone: str) -> None:
+        """Store the owner's alert phone, reusing the orchestrator's upsert.
+
+        whatsapp_configs may have no row yet at this point; set_seller_phone
+        handles both cases and is the same call tenant creation makes.
+        """
+        try:
+            orchestrator = MultiTenantOrchestrator()
+            orchestrator.db = self.db
+            await orchestrator.set_seller_phone(tenant_id, seller_phone)
+        except Exception as e:
+            logger.error(
+                f"Could not persist seller phone for tenant {tenant_id}: {e}",
+                exc_info=True,
+            )
+
+
     async def _handle_product_upload(self, tenant_id: str, phone: str, message: str, onboarding_data: Dict) -> str:
         """Handle product upload decision"""
         message_lower = message.lower().strip()

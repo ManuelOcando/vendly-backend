@@ -221,7 +221,7 @@ class TestMultiTenantOrchestratorCreateTenant:
         orchestrator._apply_industry_template = AsyncMock()
         orchestrator._create_subscription = AsyncMock()
         orchestrator._create_bot_configuration = AsyncMock()
-        orchestrator._update_seller_phone = AsyncMock()
+        orchestrator.set_seller_phone = AsyncMock()
         
         # Test with custom tenant data
         custom_data = {
@@ -242,7 +242,7 @@ class TestMultiTenantOrchestratorCreateTenant:
         assert result is not None
         assert result["description"] == "Restaurante de comida italiana"
         assert result["whatsapp_number"] == "+584123456789"
-        orchestrator._update_seller_phone.assert_called_once_with("tenant_custom", "+584241234567")
+        orchestrator.set_seller_phone.assert_called_once_with("tenant_custom", "+584241234567")
 
 
 class TestMultiTenantOrchestratorGetTenantByPhoneNumber:

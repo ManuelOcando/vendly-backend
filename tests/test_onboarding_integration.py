@@ -21,6 +21,8 @@ from services.whatsapp.handlers.onboarding import (
 from services.multi_tenant_orchestrator import MultiTenantOrchestrator
 from services.industry_templates import IndustryTemplatesService, IndustryType
 from services.offline_mode_service import parse_weekly_schedule
+from services.bot_personalities import preset_names
+from tests.fake_supabase import FakeSupabaseClient
 
 
 class TestRestaurantOnboardingCompleteFlow:
@@ -118,11 +120,26 @@ Domingo: 12:00 PM - 9:00 PM"""
         assert "Horarios guardados" in response
         assert "Lunes" in response
         assert "Sábado" in response
-        
+        # The hours step now hands off to the personality question, with the
+        # restaurant default marked.
+        assert "¿Cómo querés que hable tu bot?" in response
+        assert "recomendado para tu rubro" in response
+
+        session = handler._onboarding_sessions.get(f"{tenant_id}:{phone}")
+        assert session["current_state"] == OnboardingState.PERSONALITY
+
+        # Step 5: Pick a personality (2 = formal, overriding the restaurant
+        # default of calido)
+        message_data["message"] = "2"
+        response = await handler.handle(message_data)
+
+        assert "Paso 5: Subir Productos" in response
+        assert session["bot_personality_preset"] == "formal"
+
         session = handler._onboarding_sessions.get(f"{tenant_id}:{phone}")
         assert session["current_state"] == OnboardingState.PRODUCT_UPLOAD
-        
-        # Step 5: Skip product upload for now
+
+        # Step 6: Skip product upload for now
         message_data["message"] = "no, después"
         response = await handler.handle(message_data)
         
@@ -1015,3 +1032,169 @@ Comida italiana auténtica
         # For now, we verify the data structure supports it
         assert "industry" in session
         assert session["industry"] == "restaurant"
+
+class TestOnboardingPersistsWhatItCollects:
+    """Onboarding answers must reach the database, not just the session.
+
+    Before this, `business_info` and the selected industry lived only in
+    `_onboarding_sessions`: the seller typed their business name and it went
+    nowhere, and `tenants.type` stayed at whatever tenant creation set - which
+    is the column that picks the default bot personality.
+
+    Uses FakeSupabaseClient rather than Mock so the writes are actually
+    observable; a Mock accepts any call and proves nothing about persistence.
+    """
+
+    TENANT_ID = "tenant-onboarding"
+    PHONE = "+584123456789"
+
+    @pytest.fixture
+    def fake(self):
+        return FakeSupabaseClient({
+            "tenants": [{"id": self.TENANT_ID, "name": "Sin nombre", "type": "store"}],
+            "whatsapp_configs": [],
+            "bot_configurations": [],
+            "conversation_sessions": [],
+            "categories": [],
+            "items": [],
+        })
+
+    @pytest.fixture
+    def handler(self, fake):
+        handler = OnboardingHandler(fake)
+        handler.db = fake
+        return handler
+
+    def message(self, text):
+        return {
+            "tenant_id": self.TENANT_ID,
+            "phone": self.PHONE,
+            "message": text,
+            "session": {"id": "session-onboarding"},
+        }
+
+    def tenant(self, fake):
+        return fake.rows("tenants")[0]
+
+    @pytest.mark.asyncio
+    async def test_industry_selection_lands_on_the_tenant(self, handler, fake):
+        handler._onboarding_sessions[f"{self.TENANT_ID}:{self.PHONE}"] = {
+            "current_state": OnboardingState.INDUSTRY_SELECTION,
+        }
+
+        await handler.handle(self.message("3"))
+
+        assert self.tenant(fake)["type"] == "services"
+
+    @pytest.mark.asyncio
+    async def test_business_info_lands_on_the_tenant(self, handler, fake):
+        handler._onboarding_sessions[f"{self.TENANT_ID}:{self.PHONE}"] = {
+            "current_state": OnboardingState.BUSINESS_INFO,
+            "industry": "restaurant",
+        }
+
+        await handler.handle(self.message(
+            "El Sabor de Maria\nComida venezolana\n+584123456789"
+        ))
+
+        row = self.tenant(fake)
+        assert row["name"] == "El Sabor de Maria"
+        assert row["description"] == "Comida venezolana"
+        assert row["whatsapp_number"] == "+584123456789"
+
+    @pytest.mark.asyncio
+    async def test_optional_fourth_line_becomes_seller_phone(self, handler, fake):
+        handler._onboarding_sessions[f"{self.TENANT_ID}:{self.PHONE}"] = {
+            "current_state": OnboardingState.BUSINESS_INFO,
+            "industry": "restaurant",
+        }
+
+        response = await handler.handle(self.message(
+            "El Sabor de Maria\nComida venezolana\n+584123456789\n+584249876543"
+        ))
+
+        configs = fake.rows("whatsapp_configs")
+        assert len(configs) == 1
+        assert configs[0]["seller_phone"] == "+584249876543"
+        assert "+584249876543" in response
+
+    @pytest.mark.asyncio
+    async def test_omitting_the_fourth_line_leaves_seller_phone_unset(self, handler, fake):
+        # NULL seller_phone is meaningful: the notification paths fall back to
+        # the business number, so nothing should be written here.
+        handler._onboarding_sessions[f"{self.TENANT_ID}:{self.PHONE}"] = {
+            "current_state": OnboardingState.BUSINESS_INFO,
+            "industry": "restaurant",
+        }
+
+        response = await handler.handle(self.message(
+            "El Sabor de Maria\nComida venezolana\n+584123456789"
+        ))
+
+        assert fake.rows("whatsapp_configs") == []
+        assert "el mismo del negocio" in response
+
+    @pytest.mark.asyncio
+    async def test_invalid_fourth_line_is_rejected_without_advancing(self, handler, fake):
+        key = f"{self.TENANT_ID}:{self.PHONE}"
+        handler._onboarding_sessions[key] = {
+            "current_state": OnboardingState.BUSINESS_INFO,
+            "industry": "restaurant",
+        }
+
+        response = await handler.handle(self.message(
+            "El Sabor de Maria\nComida venezolana\n+584123456789\nno-es-un-telefono"
+        ))
+
+        assert "teléfono personal es inválido" in response
+        assert handler._onboarding_sessions[key]["current_state"] == OnboardingState.BUSINESS_INFO
+        assert fake.rows("whatsapp_configs") == []
+
+    @pytest.mark.asyncio
+    async def test_personality_choice_lands_on_the_tenant(self, handler, fake):
+        handler._onboarding_sessions[f"{self.TENANT_ID}:{self.PHONE}"] = {
+            "current_state": OnboardingState.PERSONALITY,
+            "industry": "restaurant",
+        }
+
+        await handler.handle(self.message("4"))
+
+        assert self.tenant(fake)["bot_personality_preset"] == "divertido"
+
+    @pytest.mark.asyncio
+    async def test_unrecognised_personality_answer_accepts_the_suggestion(self, handler, fake):
+        # A preference must never trap the seller in a re-ask loop.
+        key = f"{self.TENANT_ID}:{self.PHONE}"
+        handler._onboarding_sessions[key] = {
+            "current_state": OnboardingState.PERSONALITY,
+            "industry": "services",
+        }
+
+        await handler.handle(self.message("no sé"))
+
+        assert self.tenant(fake)["bot_personality_preset"] == "formal"
+        assert handler._onboarding_sessions[key]["current_state"] == OnboardingState.PRODUCT_UPLOAD
+
+    @pytest.mark.asyncio
+    async def test_personality_accepts_the_preset_name(self, handler, fake):
+        handler._onboarding_sessions[f"{self.TENANT_ID}:{self.PHONE}"] = {
+            "current_state": OnboardingState.PERSONALITY,
+            "industry": "restaurant",
+        }
+
+        await handler.handle(self.message("Formal y profesional"))
+
+        assert self.tenant(fake)["bot_personality_preset"] == "formal"
+
+    @pytest.mark.asyncio
+    async def test_the_preset_written_is_one_the_database_accepts(self, handler, fake):
+        # migration 020 constrains bot_personality_preset; a value outside the
+        # preset list would be rejected by Postgres at runtime.
+        handler._onboarding_sessions[f"{self.TENANT_ID}:{self.PHONE}"] = {
+            "current_state": OnboardingState.PERSONALITY,
+            "industry": "retail",
+        }
+
+        await handler.handle(self.message("1"))
+
+        assert self.tenant(fake)["bot_personality_preset"] in preset_names()

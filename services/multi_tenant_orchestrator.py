@@ -211,7 +211,7 @@ class MultiTenantOrchestrator:
             
             # Create default seller config
             if tenant_data and tenant_data.get("seller_phone"):
-                await self._update_seller_phone(tenant_id, tenant_data["seller_phone"])
+                await self.set_seller_phone(tenant_id, tenant_data["seller_phone"])
             
             return tenant
             
@@ -370,7 +370,7 @@ class MultiTenantOrchestrator:
             logger.error(f"Error creating bot configuration: {e}")
             raise
 
-    async def _update_seller_phone(self, tenant_id: str, seller_phone: str) -> None:
+    async def set_seller_phone(self, tenant_id: str, seller_phone: str) -> None:
         """Set the seller's personal phone number, used to distinguish the
         business owner from customers messaging the bot (see
         MetaWhatsAppBotService._is_seller). Upserts into whatsapp_configs
