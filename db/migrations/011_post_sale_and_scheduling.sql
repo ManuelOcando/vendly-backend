@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS post_sale_requests (
     status VARCHAR(20) NOT NULL DEFAULT 'open',
     satisfaction_rating SMALLINT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
     resolved_at TIMESTAMPTZ,
 
     -- Constraints

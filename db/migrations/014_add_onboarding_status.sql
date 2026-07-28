@@ -5,9 +5,13 @@
 ALTER TABLE tenants 
 ADD COLUMN IF NOT EXISTS onboarding_status VARCHAR(20) DEFAULT 'not_started';
 
--- Add check constraint for valid onboarding statuses
-ALTER TABLE tenants 
-ADD CONSTRAINT tenants_onboarding_status_check 
+-- Add check constraint for valid onboarding statuses.
+-- Dropped first because Postgres has no ADD CONSTRAINT IF NOT EXISTS and this
+-- migration would otherwise fail on a re-run.
+ALTER TABLE tenants
+DROP CONSTRAINT IF EXISTS tenants_onboarding_status_check;
+ALTER TABLE tenants
+ADD CONSTRAINT tenants_onboarding_status_check
 CHECK (onboarding_status IN ('not_started', 'in_progress', 'completed'));
 
 -- Create index for faster lookups

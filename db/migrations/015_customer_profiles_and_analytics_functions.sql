@@ -345,18 +345,29 @@ COMMENT ON COLUMN purchase_history.amount IS
 -- DATA VALIDATION CONSTRAINTS
 -- ============================================
 
+-- Postgres has no ADD CONSTRAINT IF NOT EXISTS, so each constraint is dropped
+-- first. Without this the whole migration fails on a re-run, which matters
+-- because customer_profiles and purchase_history are also created by 009 -
+-- the CREATE TABLE IF NOT EXISTS statements above are no-ops here.
+
 -- Add check constraint for valid phone number format (basic validation)
-ALTER TABLE customer_profiles 
-ADD CONSTRAINT customer_profiles_phone_format_check 
+ALTER TABLE customer_profiles
+DROP CONSTRAINT IF EXISTS customer_profiles_phone_format_check;
+ALTER TABLE customer_profiles
+ADD CONSTRAINT customer_profiles_phone_format_check
 CHECK (phone_number ~ '^\+?[0-9]{10,20}$');
 
-ALTER TABLE purchase_history 
-ADD CONSTRAINT purchase_history_phone_format_check 
+ALTER TABLE purchase_history
+DROP CONSTRAINT IF EXISTS purchase_history_phone_format_check;
+ALTER TABLE purchase_history
+ADD CONSTRAINT purchase_history_phone_format_check
 CHECK (customer_phone ~ '^\+?[0-9]{10,20}$');
 
 -- Add check constraint for positive total spent
-ALTER TABLE customer_profiles 
-ADD CONSTRAINT customer_profiles_total_spent_check 
+ALTER TABLE customer_profiles
+DROP CONSTRAINT IF EXISTS customer_profiles_total_spent_check;
+ALTER TABLE customer_profiles
+ADD CONSTRAINT customer_profiles_total_spent_check
 CHECK (total_spent >= 0);
 
 -- ============================================
