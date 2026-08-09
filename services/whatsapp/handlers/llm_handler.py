@@ -159,10 +159,16 @@ class LLMHandler(BaseWhatsAppHandler):
             )
             
             # El LLM no dio nada usable: cede a la cadena determinista.
-            # (Antes tambien se miraba una bandera "llm_error" que ningun
-            # proveedor escribe nunca - rama muerta, eliminada.)
             if not isinstance(llm_response, dict) or not llm_response:
                 logger.error(f"❌ LLM unusable ({type(llm_response).__name__}), cediendo a la cadena determinista")
+                return None
+
+            # El proveedor no pudo parsear su propia salida y devolvio relleno.
+            # Tiene forma de respuesta valida, asi que sin esta comprobacion se
+            # cuela como si el LLM hubiera contestado y el cliente recibe una
+            # disculpa en vez del saludo o el catalogo que la cadena si sabe dar.
+            if llm_response.get("llm_error"):
+                logger.warning("⚠️ Relleno del proveedor, cediendo a la cadena determinista")
                 return None
 
             logger.info(f"✅ LLM response received!")

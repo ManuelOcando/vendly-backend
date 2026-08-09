@@ -157,8 +157,14 @@ class GeminiProvider(LLMProvider):
                     except Exception as regex_error:
                         logger.error(f"❌ Regex recovery failed: {regex_error}")
                 
+                # llm_error marca esto como relleno, no como respuesta. Sin la
+                # bandera es un dict con forma valida, y tanto LLMHandler como
+                # la sonda de /health lo daban por bueno: el cliente recibia
+                # "Disculpa, hubo un error" y la cadena determinista - que si
+                # sabia contestarle - nunca llegaba a ejecutarse.
                 logger.warning("⚠️ Returning fallback response due to JSON error")
                 return {
+                    "llm_error": True,
                     "intention": "other",
                     "response_text": "Disculpa, hubo un error. ¿Puedes repetir tu pedido?",
                     "products": [],

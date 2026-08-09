@@ -83,6 +83,34 @@ class TestLLMHandlerYieldsOnFailure:
             assert await handler.handle(_message_data()) is None
 
     @pytest.mark.asyncio
+    async def test_yields_when_the_provider_returns_its_own_filler(self):
+        """
+        Cuando el proveedor no puede parsear su salida devuelve un dict con
+        forma valida y llm_error=True. Sin mirar la bandera se cuela como
+        respuesta buena y el cliente recibe "Disculpa, hubo un error" en vez
+        del saludo o el catalogo que la cadena si sabe dar.
+        """
+        provider = MagicMock()
+        provider.build_system_prompt.return_value = "prompt"
+        provider.build_context_prompt.return_value = "ctx"
+        provider.generate_response = AsyncMock(
+            return_value={
+                "llm_error": True,
+                "intention": "other",
+                "response_text": "Disculpa, hubo un error. ¿Puedes repetir tu pedido?",
+                "products": [],
+                "questions": [],
+            }
+        )
+
+        handler = LLMHandler(MagicMock())
+        with patch(
+            "services.whatsapp.handlers.llm_handler.get_llm_provider",
+            return_value=provider,
+        ):
+            assert await handler.handle(_message_data()) is None
+
+    @pytest.mark.asyncio
     async def test_never_answers_with_an_apology_about_ai(self):
         """
         La regresion concreta. Un cliente no tiene por que enterarse de que
