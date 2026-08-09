@@ -10,8 +10,10 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     
     # Supabase
+    # El backend solo usa la clave secreta: todas sus consultas van con
+    # permisos de service_role. La clave publicable la consume el frontend
+    # directamente, no pasa por aqui.
     SUPABASE_URL: str = ""
-    SUPABASE_ANON_KEY: str = ""
     SUPABASE_SECRET_KEY: str = ""
     
     # Redis (Upstash)
@@ -22,7 +24,13 @@ class Settings(BaseSettings):
     META_WHATSAPP_PHONE_ID: str = ""
     META_WHATSAPP_TOKEN: str = ""
     META_WHATSAPP_BUSINESS_ID: str = ""
-    META_WEBHOOK_VERIFY_TOKEN: str = "vendly-webhook-secret"
+    # Sin default: un valor por defecto en el codigo es un valor publicado, y
+    # ambos son secretos. Si faltan, el webhook rechaza todo en vez de aceptar
+    # con un secreto que cualquiera puede leer en el repositorio.
+    META_WEBHOOK_VERIFY_TOKEN: str = ""
+    # Meta for Developers -> tu app -> Configuracion -> Basica -> Clave secreta.
+    # Firma cada webhook; ver services/whatsapp/webhook_security.py
+    META_APP_SECRET: str = ""
     
     # Backend URL
     BACKEND_URL: str = "https://vendly-backend-uuos.onrender.com"
@@ -67,7 +75,6 @@ class Settings(BaseSettings):
         if not self.DEBUG:
             required_vars = [
                 "SUPABASE_URL",
-                "SUPABASE_ANON_KEY", 
                 "SUPABASE_SECRET_KEY"
             ]
             

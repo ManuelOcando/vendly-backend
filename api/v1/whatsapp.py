@@ -258,26 +258,77 @@ async def verify_webhook(request: Request):
     """Verificar webhook con Meta WhatsApp API"""
     from config import get_settings
     
+    import hmac
+
     settings = get_settings()
     mode = request.query_params.get('hub.mode')
     token = request.query_params.get('hub.verify_token')
     challenge = request.query_params.get('hub.challenge')
-    
-    if mode and token:
-        if mode == 'subscribe' and token == settings.META_WEBHOOK_VERIFY_TOKEN:
-            logger.info(f"Webhook verified successfully")
-            return int(challenge)
-        else:
-            logger.warning(f"Webhook verification failed. Token: {token}")
-            raise HTTPException(status_code=403)
-    
+
+    if not settings.META_WEBHOOK_VERIFY_TOKEN:
+        logger.error(
+            "META_WEBHOOK_VERIFY_TOKEN no esta configurado: no se puede "
+            "verificar la suscripcion del webhook. Generar uno aleatorio y "
+            "cargarlo en Render y en Meta -> WhatsApp -> Configuration."
+        )
+        raise HTTPException(status_code=403)
+
+    if mode == 'subscribe' and token and hmac.compare_digest(
+        token, settings.META_WEBHOOK_VERIFY_TOKEN
+    ):
+        if challenge is None or not challenge.isdigit():
+            logger.warning("Webhook verification sin hub.challenge valido")
+            raise HTTPException(status_code=400)
+        logger.info("Webhook verified successfully")
+        return int(challenge)
+
+    logger.warning("Webhook verification failed")
     raise HTTPException(status_code=403)
 
 @router.post("/webhook")
 async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     """Recibir mensajes y eventos de Meta WhatsApp API"""
+    from config import get_settings
+    from services.whatsapp.webhook_security import (
+        SIGNATURE_HEADER,
+        is_valid_signature,
+    )
+
+    settings = get_settings()
+
+    # El cuerpo crudo, no el JSON ya parseado: la firma se calcula sobre los
+    # bytes exactos que mando Meta, y volver a serializar el dict cambiaria el
+    # espaciado y no coincidiria.
+    raw_body = await request.body()
+
+    if settings.DEBUG:
+        # En local no hay forma de firmar: el curl de la guia de testing y los
+        # payloads de ejemplo no llevan App Secret. Solo aplica con DEBUG=True,
+        # que en produccion es False.
+        logger.warning(
+            "DEBUG=True: se omite la verificacion de firma del webhook"
+        )
+    elif not is_valid_signature(
+        settings.META_APP_SECRET,
+        raw_body,
+        request.headers.get(SIGNATURE_HEADER),
+    ):
+        if not settings.META_APP_SECRET:
+            logger.error(
+                "META_APP_SECRET no esta configurado: el webhook rechaza todo. "
+                "Cargarlo en Render (Meta for Developers -> app -> "
+                "Configuracion -> Basica -> Clave secreta)."
+            )
+        else:
+            logger.warning(
+                "Webhook rechazado: %s ausente o invalida", SIGNATURE_HEADER
+            )
+        # Fuera del try de abajo a proposito: ese except devuelve 200 con
+        # {"status": "error"}, que convertiria este rechazo en una aceptacion.
+        raise HTTPException(status_code=403, detail="Invalid signature")
+
     try:
-        data = await request.json()
+        data = json.loads(raw_body)
         logger.info(f"=== WEBHOOK POST RECEIVED ===")
         logger.info(f"Full payload: {json.dumps(data)[:1000]}")
         

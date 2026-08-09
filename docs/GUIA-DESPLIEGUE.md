@@ -50,9 +50,12 @@ copiarlos acá los deja desactualizados en cuanto cambian. Lo que importa saber:
 PYTHON_VERSION=3.12.0
 DEBUG=false
 SUPABASE_URL=https://slspihwznliibdecdtkj.supabase.co
-SUPABASE_ANON_KEY=eyJ...            (clave pública, va en el repo)
 FRONTEND_URL=https://vendly-frontend.vercel.app
 ```
+
+El backend **no** usa la clave publicable de Supabase: todas sus consultas van
+con `SUPABASE_SECRET_KEY`. La publicable la consume solo el frontend, desde las
+variables de entorno de Vercel.
 
 Y estas **con `sync: false`**, o sea que Render **no** las toma del archivo: hay
 que cargarlas a mano en Dashboard → Environment, y pueden quedar desincronizadas

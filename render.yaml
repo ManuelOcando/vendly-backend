@@ -11,8 +11,6 @@ services:
         value: "false"
       - key: SUPABASE_URL
         value: https://slspihwznliibdecdtkj.supabase.co
-      - key: SUPABASE_ANON_KEY
-        value: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsc3BpaHd6bmxpaWJkZWNkdGtqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUxMTExNzEsImV4cCI6MjA5MDY4NzE3MX0.fmHZDgs9YSoQCJ8anlIh1kxtrltu_5olZvBnpYTSejE
       - key: FRONTEND_URL
         value: https://vendly-frontend.vercel.app
     secretEnvVars:
@@ -27,6 +25,8 @@ services:
       - key: META_WHATSAPP_BUSINESS_ID
         sync: false
       - key: META_WEBHOOK_VERIFY_TOKEN
+        sync: false
+      - key: META_APP_SECRET
         sync: false
       - key: GEMINI_API_KEY
         sync: false

@@ -51,7 +51,9 @@ npm run lint
 
 ### 2.1 Backend (vendly-backend/.env)
 
-Crear archivo `.env`:
+Copiar `.env.test` a `.env` y rellenar los valores. **Ningún valor real va en
+este documento**: el repositorio es público, y una clave pegada aquí queda
+publicada y hay que rotarla.
 
 ```env
 # App
@@ -59,10 +61,11 @@ APP_NAME=Vendly API
 APP_VERSION=0.1.0
 DEBUG=True
 
-# Supabase (ya configurado)
-SUPABASE_URL=https://slspihwznliibdecdtkj.supabase.co
-SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsc3BpaHd6bmxpaWJkZWNkdGtqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUxMTExNzEsImV4cCI6MjA5MDY4NzE3MX0.fmHZDgs9YSoQCJ8anlIh1kxtrltu_5olZvBnpYTSejE
-SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsc3BpaHd6bmxpaWJkZWNkdGtqIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NTExMTE3MSwiZXhwIjoyMDkwNjg3MTcxfQ.WGJpRFZV7DEA_vWfalZ45t2OMU0iDnTrKXOobePWfn0
+# Supabase -> Settings -> API Keys
+# El backend solo necesita la secreta (sb_secret_...): sus consultas van con
+# permisos de service_role. La publicable es cosa del frontend.
+SUPABASE_URL=https://<tu-proyecto>.supabase.co
+SUPABASE_SECRET_KEY=sb_secret_...
 
 # Redis (Upstash - obtener de upstash.com)
 UPSTASH_REDIS_URL=https://your-url.upstash.io
@@ -72,7 +75,9 @@ UPSTASH_REDIS_TOKEN=your-token
 META_WHATSAPP_PHONE_ID=your-phone-number-id
 META_WHATSAPP_TOKEN=your-access-token
 META_WHATSAPP_BUSINESS_ID=your-waba-id
-META_WEBHOOK_VERIFY_TOKEN=vendly-webhook-secret
+# Cadena aleatoria propia, la misma que se pega en Meta -> Configuration.
+# No dejarla sin definir: el default de config.py es conocido.
+META_WEBHOOK_VERIFY_TOKEN=$(openssl rand -hex 32)
 
 # Frontend
 FRONTEND_URL=http://localhost:3000
@@ -89,9 +94,13 @@ Crear archivo `.env.local`:
 
 ```env
 NEXT_PUBLIC_API_URL=http://localhost:8000
-NEXT_PUBLIC_SUPABASE_URL=https://slspihwznliibdecdtkj.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsc3BpaHd6bmxpaWJkZWNkdGtqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUxMTExNzEsImV4cCI6MjA5MDY4NzE3MX0.fmHZDgs9YSoQCJ8anlIh1kxtrltu_5olZvBnpYTSejE
+NEXT_PUBLIC_SUPABASE_URL=https://<tu-proyecto>.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=sb_publishable_...
 ```
+
+La publicable viaja al navegador, así que no es un secreto; aun así se toma del
+entorno (`.env.local` en local, variables de Vercel en producción) y no se
+escribe en `vercel.json`, para que rotarla no exija un commit.
 
 ---
 
@@ -654,6 +663,13 @@ curl -X DELETE http://localhost:8000/api/v1/whatsapp/config \
 > El `id` del mensaje se deduplica: reenviar el mismo `wamid.test-001` se ignora.
 > Para probar dos veces, cambiar el id.
 
+> **Este `curl` solo funciona con `DEBUG=True`.** En producción el webhook
+> verifica la cabecera `X-Hub-Signature-256` (HMAC-SHA256 del cuerpo con
+> `META_APP_SECRET`) y devuelve 403 sin ella, así que un payload a pelo no
+> entra. Con `DEBUG=True` se omite la verificación, que es lo que permite
+> simular mensajes en local. Para firmar un cuerpo a mano:
+> `python -c "from services.whatsapp.webhook_security import sign_payload; print(sign_payload('<app-secret>', open('cuerpo.json','rb').read()))"`
+
 ---
 
 ## 7. TESTING DE COMPONENTES FRONTEND
@@ -777,11 +793,13 @@ redis-server
 **Síntoma:** Errores 401 o 500 en queries
 ```bash
 # Verificar credenciales en .env
-# Verificar que SUPABASE_SERVICE_ROLE_KEY está correcta
+# Verificar que SUPABASE_SECRET_KEY está correcta (no se llama
+# SUPABASE_SERVICE_ROLE_KEY, y las claves legacy JWT están deshabilitadas:
+# una eyJ... devuelve 401 "Legacy API keys are disabled")
 
 # Probar conexión directa
-curl https://slspihwznliibdecdtkj.supabase.co/rest/v1/tenants \
-  -H "apikey: tu-anon-key"
+curl https://<tu-proyecto>.supabase.co/rest/v1/tenants \
+  -H "apikey: $SUPABASE_SECRET_KEY"
 ```
 
 ### 8.5 Frontend no carga
