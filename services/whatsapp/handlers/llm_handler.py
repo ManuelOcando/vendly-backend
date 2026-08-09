@@ -121,8 +121,8 @@ class LLMHandler(BaseWhatsAppHandler):
             provider = get_llm_provider()
             
             if not provider:
-                logger.error("❌ Could not create LLM provider")
-                return self._get_fallback_message(language)
+                logger.error("❌ Could not create LLM provider, cediendo a la cadena determinista")
+                return None
             logger.info(f"✅ Provider created: {type(provider).__name__}")
             
             # Build prompts using provider's methods
@@ -158,19 +158,13 @@ class LLMHandler(BaseWhatsAppHandler):
                 response_format={"type": "json_object"}
             )
             
-            # Check if there was an LLM error
-            if not llm_response:
-                logger.error("❌ LLM returned None!")
-                return self._get_fallback_message(language)
-            
-            if not isinstance(llm_response, dict):
-                logger.error(f"❌ LLM returned invalid type: {type(llm_response)}")
-                return self._get_fallback_message(language)
-            
-            if llm_response.get("llm_error"):
-                logger.warning(f"⚠️ LLM returned error flag: {llm_response.get('response_text', 'Unknown')}")
-                return llm_response.get("response_text", self._get_fallback_message(language))
-            
+            # El LLM no dio nada usable: cede a la cadena determinista.
+            # (Antes tambien se miraba una bandera "llm_error" que ningun
+            # proveedor escribe nunca - rama muerta, eliminada.)
+            if not isinstance(llm_response, dict) or not llm_response:
+                logger.error(f"❌ LLM unusable ({type(llm_response).__name__}), cediendo a la cadena determinista")
+                return None
+
             logger.info(f"✅ LLM response received!")
             logger.info(f"   Intention: {llm_response.get('intention', 'unknown')}")
             logger.info(f"   Products: {len(llm_response.get('products', []))}")
@@ -237,7 +231,9 @@ class LLMHandler(BaseWhatsAppHandler):
             logger.error(f"Error message: {str(e)}")
             logger.error(f"Full traceback:", exc_info=True)
             logger.error("="*60)
-            return self._get_fallback_message(language)
+            # Ceder, no disculparse: la cadena determinista sabe saludar,
+            # mostrar el menu y tomar un pedido por nombre sin tocar el LLM.
+            return None
     
     async def _get_available_products(self, tenant_id: str) -> List[Dict[str, Any]]:
         """Get list of available products for tenant"""
@@ -647,7 +643,3 @@ class LLMHandler(BaseWhatsAppHandler):
             }).eq("id", session_id).execute()
         except Exception as e:
             logger.error(f"Error updating history: {e}")
-    
-    def _get_fallback_message(self, language: str = DEFAULT_LANGUAGE) -> str:
-        """Get fallback message when LLM fails"""
-        return t("llm.fallback", language)

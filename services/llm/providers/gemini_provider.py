@@ -1,11 +1,12 @@
 """
 Gemini Provider for LLM
-Uses Google Generative AI API (Gemini 2.5 Flash, etc.)
+Uses Google Generative AI API. El modelo concreto sale de config.GEMINI_MODEL.
 """
 import json
 import logging
 from typing import Dict, Any, List, Optional
 import google.generativeai as genai
+from config import get_settings
 from .base import LLMProvider, language_directive as _language_directive
 
 logger = logging.getLogger(__name__)
@@ -14,16 +15,17 @@ logger = logging.getLogger(__name__)
 class GeminiProvider(LLMProvider):
     """Google Gemini LLM Provider"""
     
-    DEFAULT_MODEL = "gemini-2.5-flash"
     CONFIDENCE_THRESHOLD = 0.7
-    
+
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        
+
         logger.info("🚀 Initializing GeminiProvider...")
-        
+
         self.api_key = config.get("api_key")
-        self.model_name = config.get("model", self.DEFAULT_MODEL)
+        # Sin DEFAULT_MODEL propio: era una segunda copia del nombre y quedo
+        # apuntando a un modelo retirado. El default vive en config.GEMINI_MODEL.
+        self.model_name = config.get("model") or get_settings().GEMINI_MODEL
         self.confidence_threshold = config.get("confidence_threshold", self.CONFIDENCE_THRESHOLD)
         
         logger.info(f"📊 Model: {self.model_name}")

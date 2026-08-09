@@ -467,11 +467,6 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         "en": "Unknown product",
         "pt": "Produto desconhecido",
     },
-    "llm.fallback": {
-        "es": '🤖 Lo siento, no pude procesar tu mensaje con inteligencia artificial en este momento.\n\nPuedes intentar pedir de estas formas:\n• Escribe el nombre exacto del producto\n• Escribe "menu" para ver la lista de productos\n• Para pedidos simples, escribe: "[producto] y [producto]"\n\n¿En qué puedo ayudarte? Escribe "hola" para comenzar.',
-        "en": '🤖 Sorry, I couldn\'t process your message with AI right now.\n\nYou can try ordering like this:\n• Type the exact product name\n• Type "menu" to see the product list\n• For simple orders, type: "[product] and [product]"\n\nHow can I help? Type "hi" to start.',
-        "pt": '🤖 Desculpe, não consegui processar sua mensagem com inteligência artificial agora.\n\nVocê pode tentar pedir assim:\n• Escreva o nome exato do produto\n• Escreva "menu" para ver a lista de produtos\n• Para pedidos simples, escreva: "[produto] e [produto]"\n\nComo posso ajudar? Escreva "oi" para começar.',
-    },
 
     # -- Bot service (orchestrator) ---------------------------------------
     "bot.generic_error": {

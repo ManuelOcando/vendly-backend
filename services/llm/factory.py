@@ -91,10 +91,12 @@ class LLMProviderFactory:
                 tenant_config.get("api_key") if tenant_config else None
             ) or getattr(settings, 'GEMINI_API_KEY', None)
             
-            # Model
+            # Model. Sin literal de reserva: GEMINI_MODEL siempre existe como
+            # campo de Settings, asi que el getattr solo servia para esconder
+            # una tercera copia del nombre - y estaba desactualizada.
             config["model"] = (
                 tenant_config.get("model") if tenant_config else None
-            ) or getattr(settings, 'GEMINI_MODEL', 'gemini-2.5-flash-preview-05-20')
+            ) or settings.GEMINI_MODEL
             
             # Confidence threshold
             config["confidence_threshold"] = (

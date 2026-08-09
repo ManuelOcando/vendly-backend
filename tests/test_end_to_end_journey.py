@@ -128,6 +128,48 @@ def journey(request):
         yield Journey(fake, bot, seller_meta.return_value.send_message)
 
 
+class _LLMEnabledSettings(_LLMDisabledSettings):
+    """LLM on, so can_handle passes and handle() actually runs."""
+    LLM_ENABLED = True
+    GEMINI_API_KEY = "una-clave-cualquiera"
+
+
+class TestLLMOutageDegradesToTheDeterministicChain:
+    """
+    El caso que se vio en produccion: el LLM esta configurado y activo, pero
+    cada llamada falla. Distinto de LLM_ENABLED=False, que ni siquiera entra a
+    handle(); aqui entra y revienta, que es la ruta que estaba rota.
+    """
+
+    @pytest.mark.asyncio
+    async def test_greeting_survives_a_dead_llm(self, journey):
+        with patch(
+            "services.whatsapp.handlers.llm_handler.get_settings",
+            return_value=_LLMEnabledSettings(),
+        ), patch(
+            "services.whatsapp.handlers.llm_handler.get_llm_provider",
+            side_effect=RuntimeError("404 model not available to new users"),
+        ):
+            respuesta = await journey.say("hola")
+
+        assert respuesta
+        assert "inteligencia artificial" not in respuesta.lower()
+
+    @pytest.mark.asyncio
+    async def test_catalog_survives_a_dead_llm(self, journey):
+        """Pedir el menu no necesita un LLM y no debe depender de uno."""
+        with patch(
+            "services.whatsapp.handlers.llm_handler.get_settings",
+            return_value=_LLMEnabledSettings(),
+        ), patch(
+            "services.whatsapp.handlers.llm_handler.get_llm_provider",
+            side_effect=RuntimeError("404 model not available to new users"),
+        ):
+            respuesta = await journey.say("menu")
+
+        assert "Hamburguesa" in respuesta
+
+
 class TestCompleteCustomerJourney:
     """Greeting -> catalog -> storefront cart -> confirmed order."""
 

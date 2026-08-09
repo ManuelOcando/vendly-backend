@@ -40,7 +40,11 @@ class Settings(BaseSettings):
     
     # Gemini Configuration (Set via environment variable GEMINI_API_KEY in production)
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = "gemini-2.5-flash"
+    # Unico sitio donde vive el nombre del modelo. Ojo al cambiarlo: Google
+    # retira modelos "para usuarios nuevos", asi que una clave recien creada
+    # recibe 404 en un modelo que la clave anterior si podia usar. Toda la
+    # familia 2.x quedo cerrada de esa forma al rotar la clave.
+    GEMINI_MODEL: str = "gemini-3.6-flash"
     
     # OpenRouter Configuration
     OPENROUTER_API_KEY: str = ""
