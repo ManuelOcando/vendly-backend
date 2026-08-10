@@ -63,19 +63,48 @@ class TestNetworkReport:
         assert "x_forwarded_for" in red
         assert red["x_forwarded_for"] is None
 
-    def test_headers_do_not_change_the_key_today(self, client):
+    def test_counts_the_proxy_hops(self, client):
         """
-        Deja constancia del comportamiento actual: get_remote_address ignora
-        X-Forwarded-For por completo. Si esto empieza a fallar es que se
-        cambio la key_func o se activaron las cabeceras de proxy, y entonces
-        los limites por IP pasan a ser falsificables si no se validan.
+        Cuantos saltos hay decide de que posicion se puede leer la IP real
+        cuando no hay una cabecera de confianza.
         """
-        sin = client.get("/api/v1/health").json()["network"]["rate_limit_key"]
-        con = client.get(
-            "/api/v1/health", headers={"X-Forwarded-For": "198.51.100.9"}
-        ).json()["network"]["rate_limit_key"]
+        red = client.get(
+            "/api/v1/health",
+            headers={"X-Forwarded-For": "203.0.113.7, 104.23.190.112, 10.192.63.131"},
+        ).json()["network"]
 
-        assert sin == con
+        assert red["xff_hops"] == 3
+
+    def test_reports_the_cloudflare_headers(self, client):
+        """
+        Cloudflare las sobrescribe en cada peticion, asi que son la unica
+        fuente de IP de cliente que el cliente no puede fijar el mismo.
+        """
+        red = client.get(
+            "/api/v1/health",
+            headers={"CF-Connecting-IP": "203.0.113.7", "CF-Ray": "8f2a-MAD"},
+        ).json()["network"]
+
+        assert red["cf_connecting_ip"] == "203.0.113.7"
+        assert red["cf_ray"] == "8f2a-MAD"
+
+    def test_a_forged_forwarded_for_is_visible_in_the_report(self, client):
+        """
+        Medido en produccion: uvicorn confia en el proxy y toma la entrada mas
+        a la izquierda de X-Forwarded-For, que es la que fija el cliente. El
+        reporte tiene que dejar ver el desfase entre lo que el cliente afirma
+        y lo que dice una cabecera de confianza.
+        """
+        red = client.get(
+            "/api/v1/health",
+            headers={
+                "X-Forwarded-For": "203.0.113.7, 159.26.98.237",
+                "CF-Connecting-IP": "159.26.98.237",
+            },
+        ).json()["network"]
+
+        assert red["x_forwarded_for"].startswith("203.0.113.7")
+        assert red["cf_connecting_ip"] == "159.26.98.237"
 
 
 class TestRateLimitHitsAreLogged:

@@ -34,10 +34,18 @@ def _network_report(request: Request) -> dict:
     No expone nada: a quien llama le devuelve su propia direccion y las
     cabeceras que el mismo mando.
     """
+    xff = request.headers.get("x-forwarded-for")
+
     return {
         "rate_limit_key": get_remote_address(request),
         "client_host": request.client.host if request.client else None,
-        "x_forwarded_for": request.headers.get("x-forwarded-for"),
+        "x_forwarded_for": xff,
+        "xff_hops": len([p for p in xff.split(",") if p.strip()]) if xff else 0,
+        # Cloudflare sobrescribe estas dos en cada peticion, asi que a
+        # diferencia de X-Forwarded-For no las puede fijar el cliente.
+        "cf_connecting_ip": request.headers.get("cf-connecting-ip"),
+        "true_client_ip": request.headers.get("true-client-ip"),
+        "cf_ray": request.headers.get("cf-ray"),
         "x_real_ip": request.headers.get("x-real-ip"),
         "forwarded": request.headers.get("forwarded"),
     }
