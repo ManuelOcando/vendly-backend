@@ -6,11 +6,41 @@ from config import get_settings
 from middleware.rate_limiter import limiter
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 import logging
 import time
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _network_report(request: Request) -> dict:
+    """
+    Que direccion cree el servidor que tiene enfrente, y que dijeron los
+    proxies. Existe para decidir como llavear el rate limiting.
+
+    slowapi.get_remote_address devuelve request.client.host y nunca lee
+    X-Forwarded-For. Quien puede reescribir request.client es el
+    ProxyHeadersMiddleware de uvicorn, y solo si el par TCP esta en
+    --forwarded-allow-ips, que por defecto es 127.0.0.1. Comparar los dos
+    valores dice en cual de los dos mundos estamos:
+
+      client_host == alguna entrada de x_forwarded_for
+          -> uvicorn confia en el proxy y llavea por IP real de cliente.
+      client_host es otra cosa (una IP interna)
+          -> las cabeceras se ignoran y TODOS los clientes comparten cubo:
+             cualquier limite por IP estrangula a los legitimos entre si.
+
+    No expone nada: a quien llama le devuelve su propia direccion y las
+    cabeceras que el mismo mando.
+    """
+    return {
+        "rate_limit_key": get_remote_address(request),
+        "client_host": request.client.host if request.client else None,
+        "x_forwarded_for": request.headers.get("x-forwarded-for"),
+        "x_real_ip": request.headers.get("x-real-ip"),
+        "forwarded": request.headers.get("forwarded"),
+    }
 
 
 def _llm_config_report() -> dict:
@@ -53,6 +83,7 @@ async def health_check(request: Request):
         "supabase": "unknown",
         "redis": "unknown",
         "llm": _llm_config_report(),
+        "network": _network_report(request),
     }
 
     # Verificar Supabase
