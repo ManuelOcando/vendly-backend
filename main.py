@@ -8,6 +8,7 @@ from api.v1.router import router as v1_router
 from db.schema_check import run_schema_check
 from middleware.rate_limiter import limiter, rate_limit_exception_handler
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 import logging
 
 # Configure logging
@@ -30,9 +31,12 @@ app = FastAPI(
     redoc_url="/redoc" if settings.DEBUG else None
 )
 
-# Add rate limiting
+# Add rate limiting. El middleware aplica DEFAULT_LIMITS a *toda* ruta; sin el,
+# slowapi solo cuenta las decoradas una por una, que es como 22 rutas publicas
+# se quedaron sin limite y como se quedaria sin limite la proxima que se añada.
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_exception_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 # Routes for legal pages (required for Meta approval)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

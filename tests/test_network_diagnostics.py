@@ -6,7 +6,6 @@ contra produccion, el limite de 100/minuto de /health nunca llego a saltar
 porque la instancia free sirve ~1 peticion por segundo, asi que no hubo forma
 de observar la clave desde fuera. Estos campos la hacen observable.
 """
-import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -106,45 +105,8 @@ class TestNetworkReport:
         assert red["x_forwarded_for"].startswith("203.0.113.7")
         assert red["cf_connecting_ip"] == "159.26.98.237"
 
-
-class TestRateLimitHitsAreLogged:
-    def test_the_handler_logs_before_responding(self, caplog):
-        """
-        Antes, main.py registraba el manejador pelado de slowapi y el envoltorio
-        con logging era codigo muerto: los 429 no dejaban rastro.
-        """
-        import asyncio
-
-        from middleware.rate_limiter import rate_limit_exception_handler
-        from slowapi.errors import RateLimitExceeded
-
-        request = MagicMock()
-        request.url.path = "/api/v1/whatsapp/webhook"
-        request.client.host = "203.0.113.7"
-
-        exc = MagicMock(spec=RateLimitExceeded)
-        exc.detail = "5 per 1 minute"
-
-        with caplog.at_level(logging.WARNING, logger="middleware.rate_limiter"), patch(
-            "middleware.rate_limiter._rate_limit_exceeded_handler",
-            return_value="respuesta",
-        ):
-            resultado = asyncio.run(rate_limit_exception_handler(request, exc))
-
-        assert resultado == "respuesta"
-        assert "Rate limit alcanzado" in caplog.text
-        assert "/api/v1/whatsapp/webhook" in caplog.text
-        assert "203.0.113.7" in caplog.text
-
-    def test_main_registers_the_logging_handler(self):
-        """El envoltorio solo sirve si es el que esta enchufado."""
-        import inspect
-
-        import main
-
-        fuente = inspect.getsource(main)
-        assert "rate_limit_exception_handler" in fuente
-
-        from middleware.rate_limiter import rate_limit_exception_handler
-
-        assert inspect.iscoroutinefunction(rate_limit_exception_handler)
+# El registro de los 429 se cubre en tests/test_rate_limiting.py, junto al
+# resto del comportamiento del limitador. Aqui vivio un rato mientras el
+# diagnostico era lo unico que habia, y una de sus aserciones se quedo al
+# reves: exigia que el manejador fuera una corrutina, y tiene que ser
+# sincrono o SlowAPIMiddleware lo descarta.

@@ -14,6 +14,7 @@ import asyncio
 from dataclasses import dataclass, field
 
 from api.deps import get_current_tenant
+from middleware.rate_limiter import limiter
 from services.whatsapp.meta_service import MetaWhatsAppService
 
 router = APIRouter()
@@ -286,8 +287,17 @@ async def verify_webhook(request: Request):
     raise HTTPException(status_code=403)
 
 @router.post("/webhook")
+@limiter.limit("300/minute")
 async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
-    """Recibir mensajes y eventos de Meta WhatsApp API"""
+    """
+    Recibir mensajes y eventos de Meta WhatsApp API.
+
+    300/minuto por IP. El trafico legitimo llega todo desde las IPs de Meta y
+    ni se acerca a ese numero al volumen actual, asi que el limite solo muerde
+    a una inundacion desde un origen unico. Aunque la firma ya rechaza los
+    payloads falsos, cada intento sigue costando un HMAC, un log y un ciclo de
+    la instancia - y la instancia sirve ~1 peticion por segundo.
+    """
     from config import get_settings
     from services.whatsapp.webhook_security import (
         SIGNATURE_HEADER,
