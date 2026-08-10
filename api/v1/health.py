@@ -7,11 +7,74 @@ from middleware.rate_limiter import limiter
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
+import asyncio
 import logging
 import time
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+_DEPENDENCY_TTL_SECONDS = 15
+_dependency_cache: dict = {"at": 0.0, "value": None}
+_dependency_lock = asyncio.Lock()
+
+
+async def _dependency_checks() -> tuple:
+    """
+    Estado de Supabase y Redis, cacheado unos segundos.
+
+    Son las dos unicas partes de /health que cuestan algo: una consulta a la
+    base y un ida y vuelta a Redis. El endpoint es publico, Render lo sondea
+    sin parar, y la instancia sirve ~1 peticion por segundo - medido: 130
+    peticiones con 25 en paralelo tardaron 127 segundos. Sin cache, cualquiera
+    convierte /health en un amplificador contra la base de datos.
+
+    El TTL es corto a proposito: una caida real se reporta con 15 segundos de
+    retraso como mucho, que es de sobra para monitorizacion, y a cambio el
+    coste deja de crecer con el trafico.
+
+    El candado evita la estampida: bajo inundacion, sin el, todas las
+    peticiones que llegan con la cache vencida saldrian a la base a la vez, que
+    es justo el momento en que menos conviene.
+
+    Devuelve (checks, edad_en_segundos) para que quien lea sepa como de fresco
+    es el dato en vez de tener que suponerlo.
+    """
+    ahora = time.monotonic()
+    cacheado = _dependency_cache["value"]
+    if cacheado is not None and ahora - _dependency_cache["at"] < _DEPENDENCY_TTL_SECONDS:
+        return dict(cacheado), round(ahora - _dependency_cache["at"], 1)
+
+    async with _dependency_lock:
+        # Otra corrutina pudo refrescar mientras esperabamos el candado.
+        ahora = time.monotonic()
+        cacheado = _dependency_cache["value"]
+        if cacheado is not None and ahora - _dependency_cache["at"] < _DEPENDENCY_TTL_SECONDS:
+            return dict(cacheado), round(ahora - _dependency_cache["at"], 1)
+
+        resultado = {"supabase": "unknown", "redis": "unknown"}
+
+        try:
+            db = get_supabase_client()
+            db.table("tenants").select("id").limit(1).execute()
+            resultado["supabase"] = "connected"
+        except Exception as e:
+            resultado["supabase"] = f"error: {str(e)}"
+            logger.warning(f"Supabase health check failed: {e}")
+
+        try:
+            redis = get_redis_client()
+            await redis.set("health_check", "ok", ex=10)
+            valor = await redis.get("health_check")
+            resultado["redis"] = "connected" if valor == "ok" else "error"
+        except Exception as e:
+            resultado["redis"] = f"error: {str(e)}"
+            logger.warning(f"Redis health check failed: {e}")
+
+        _dependency_cache["at"] = time.monotonic()
+        _dependency_cache["value"] = dict(resultado)
+        return resultado, 0.0
 
 
 def _network_report(request: Request) -> dict:
@@ -83,37 +146,23 @@ async def health_check(request: Request):
     """Verifica que el servidor está funcionando."""
     settings = get_settings()
     
+    dependencias, edad = await _dependency_checks()
+
     checks = {
         "status": "ok",
         "app": settings.APP_NAME,
         "version": settings.APP_VERSION,
         "environment": "development" if settings.DEBUG else "production",
-        "supabase": "unknown",
-        "redis": "unknown",
+        **dependencias,
+        # Cuantos segundos lleva el dato de supabase/redis en cache. 0.0 = se
+        # acaba de comprobar. Que quien monitoriza no tenga que suponerlo.
+        "checks_age_seconds": edad,
         "llm": _llm_config_report(),
+        # Fuera de la cache a proposito: depende de quien pregunta, y cachearlo
+        # le devolveria a un cliente la direccion de otro.
         "network": _network_report(request),
     }
 
-    # Verificar Supabase
-    try:
-        db = get_supabase_client()
-        # Intentar una query simple
-        db.table("tenants").select("id").limit(1).execute()
-        checks["supabase"] = "connected"
-    except Exception as e:
-        checks["supabase"] = f"error: {str(e)}"
-        logger.warning(f"Supabase health check failed: {e}")
-    
-    # Verificar Redis
-    try:
-        redis = get_redis_client()
-        await redis.set("health_check", "ok", ex=10)
-        result = await redis.get("health_check")
-        checks["redis"] = "connected" if result == "ok" else "error"
-    except Exception as e:
-        checks["redis"] = f"error: {str(e)}"
-        logger.warning(f"Redis health check failed: {e}")
-    
     # Determinar status general. El LLM cuenta como degradacion, no como
     # caida: desde que LLMHandler cede en vez de disculparse, con el LLM roto
     # el bot sigue saludando, mostrando el catalogo y tomando pedidos por
