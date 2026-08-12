@@ -87,50 +87,38 @@ async def add_security_headers(request, call_next):
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
-# CORS - permitir frontend
-# Lista de orígenes permitidos (filtrar vacíos)
-origins = list(filter(None, [
-    settings.FRONTEND_URL,
+# CORS. Nunca "*", en ningun modo. Esta politica la aplica el navegador, no el
+# servidor: un comodin no abre la API a curl (que nunca la miro), sino que
+# permite que el JavaScript de cualquier web lea nuestras respuestas en el
+# navegador del usuario. Y con credenciales activas Starlette refleja el origen
+# de quien llama, asi que "*" no es el comodin anonimo que aparenta.
+#
+# Habia dos ramas que lo añadian. La de produccion pedia len(origins) < 2 y
+# nunca se cumplia, porque la lista de abajo siempre trae tres literales: era
+# codigo muerto aparentando proteccion. La de DEBUG si se cumplia.
+ALLOWED_ORIGINS = (
     "http://localhost:3000",
     "https://vendly-frontend.vercel.app",
     "https://vendly-storefront.vercel.app",
-    "https://vendly-frontend.vercel.app",  # Duplicado intencional por si acaso
-]))
+)
 
-# Eliminar duplicados manteniendo orden
-seen = set()
-origins = [x for x in origins if not (x in seen or seen.add(x))]
-
-# En producción, si FRONTEND_URL no está configurado, agregar wildcard temporal
-if not settings.DEBUG and len(origins) < 2:
-    logger.warning("FRONTEND_URL not configured, adding temporary wildcard")
-    origins.append("*")
-
-# Agregar wildcard para desarrollo
-if settings.DEBUG:
-    origins.append("*")
+origins = list(dict.fromkeys(filter(None, [settings.FRONTEND_URL, *ALLOWED_ORIGINS])))
 
 logger.info(f"CORS configured with origins: {origins}")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,
+    # El backend no fija ni lee cookies en ningun punto: la sesion viaja en
+    # Authorization: Bearer, que el navegador no adjunta por su cuenta. Con las
+    # credenciales apagadas, un origen ajeno no puede aprovechar la sesion de
+    # nadie aunque la lista de arriba se equivoque algun dia.
+    allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
     expose_headers=["*"],
     max_age=86400,  # 24 horas
 )
-
-# Ensure CORS headers are added to all responses including errors
-@app.middleware("http")
-async def cors_middleware(request, call_next):
-    response = await call_next(request)
-    origin = request.headers.get("origin")
-    if origin in origins or "*" in origins:
-        response.headers["Access-Control-Allow-Origin"] = origin if origin in origins else origins[0] if origins else "*"
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-    return response
 
 # Rutas
 app.include_router(v1_router)
