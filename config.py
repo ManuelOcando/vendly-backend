@@ -101,7 +101,30 @@ class Settings(BaseSettings):
                 raise ValueError(
                     f"Missing required environment variables for production: {', '.join(missing_vars)}"
                 )
-            
+
+        # Que este puesta no basta: tiene que ser utilizable. Una clave Fernet
+        # son 32 bytes en base64 url-safe, 44 caracteres terminados en "=", y ese
+        # "=" final se pierde con facilidad al copiarla y pegarla. Comprobar solo
+        # que no este vacia deja arrancar al backend con una clave rota que no
+        # falla hasta que un comerciante intenta guardar su WhatsApp, que es el
+        # peor momento posible para enterarse.
+        #
+        # Se valida aunque DEBUG sea true: en desarrollo se permite no tener
+        # clave, pero no tener una que no sirve.
+        if self.WHATSAPP_TOKEN_ENCRYPTION_KEY:
+            from cryptography.fernet import Fernet
+
+            try:
+                Fernet(self.WHATSAPP_TOKEN_ENCRYPTION_KEY.encode())
+            except Exception as e:
+                raise ValueError(
+                    "WHATSAPP_TOKEN_ENCRYPTION_KEY no es una clave Fernet valida "
+                    f"({len(self.WHATSAPP_TOKEN_ENCRYPTION_KEY)} caracteres; se esperan 44 "
+                    f"terminados en '='): {e}. Generar una con: python -c \"from "
+                    "cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+                ) from e
+
+        if not self.DEBUG:
             # Warning if FRONTEND_URL not set (CORS may not work properly)
             if not self.FRONTEND_URL or self.FRONTEND_URL == "http://localhost:3000":
                 import logging

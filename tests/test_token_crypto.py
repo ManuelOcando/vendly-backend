@@ -167,6 +167,52 @@ class TestNadieLeeElTokenPorSuCuenta:
         assert "encrypt_token" in texto
 
 
+class TestLaClaveSeValidaAlArrancar:
+    """
+    Que la variable este puesta no basta: tiene que servir.
+
+    Paso de verdad. La clave se pego en .env sin el "=" final -- 43 caracteres
+    en vez de 44 -- y el backend arranco igual, porque la comprobacion original
+    solo miraba que no estuviera vacia. Una clave asi no falla hasta que alguien
+    intenta guardar un token, o sea en produccion y con un comerciante delante.
+    """
+
+    def clave_valida(self):
+        return Fernet.generate_key().decode()
+
+    def test_una_clave_valida_pasa(self):
+        from config import Settings
+
+        Settings(WHATSAPP_TOKEN_ENCRYPTION_KEY=self.clave_valida(), DEBUG=True)
+
+    def test_una_clave_sin_el_igual_final_es_rechazada(self):
+        from config import Settings
+
+        truncada = self.clave_valida().rstrip("=")
+        with pytest.raises(ValueError, match="no es una clave Fernet valida"):
+            Settings(WHATSAPP_TOKEN_ENCRYPTION_KEY=truncada, DEBUG=True)
+
+    def test_el_error_dice_cuantos_caracteres_hay(self):
+        """Para que se vea de un vistazo que faltan caracteres, sin adivinar."""
+        from config import Settings
+
+        truncada = self.clave_valida().rstrip("=")
+        with pytest.raises(ValueError, match=f"{len(truncada)} caracteres"):
+            Settings(WHATSAPP_TOKEN_ENCRYPTION_KEY=truncada, DEBUG=True)
+
+    def test_cualquier_cosa_que_no_sea_una_clave_es_rechazada(self):
+        from config import Settings
+
+        with pytest.raises(ValueError, match="no es una clave Fernet valida"):
+            Settings(WHATSAPP_TOKEN_ENCRYPTION_KEY="pon-aqui-tu-clave", DEBUG=True)
+
+    def test_en_desarrollo_se_permite_no_tener_clave(self):
+        """Sin clave se puede leer, no escribir. Con una rota no se puede nada."""
+        from config import Settings
+
+        Settings(WHATSAPP_TOKEN_ENCRYPTION_KEY="", DEBUG=True)
+
+
 class TestElAccesorSeImportaSolo:
     """
     db/whatsapp_config.py tiene que poder importarse el primero.
