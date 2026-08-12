@@ -14,5 +14,10 @@ requests>=2.31.0,<3.0.0
 # talks to the database through the Supabase REST client.
 psycopg[binary]>=3.2,<4.0
 
+# Cifra whatsapp_configs.access_token (db/token_crypto.py). Ya
+# llegaba como dependencia transitiva de supabase, pero ahora dependemos de ella
+# directamente y eso se declara.
+cryptography>=42.0,<47.0
+
 # LLM Providers
 google-generativeai>=0.7.0,<1.0.0  # Gemini

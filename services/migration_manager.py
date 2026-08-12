@@ -166,7 +166,7 @@ class MigrationManager:
                     warnings.append("Some orders may have missing items")
             
             # Check for missing WhatsApp configuration
-            whatsapp_result = self.db.table("whatsapp_configs").select("*").eq(
+            whatsapp_result = self.db.table("whatsapp_configs").select("id").eq(
                 "tenant_id", tenant_id
             ).execute()
             

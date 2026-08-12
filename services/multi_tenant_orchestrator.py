@@ -11,6 +11,7 @@ import logging
 import uuid
 
 from db.supabase import get_supabase_client
+from db.whatsapp_config import upsert_seller_phone
 from models.vendly_pro import (
     IndustryType, PlanType, SubscriptionStatus, TenantSubscriptionCreate
 )
@@ -380,22 +381,7 @@ class MultiTenantOrchestrator:
         than inserting a duplicate.
         """
         try:
-            existing = self.db.table("whatsapp_configs").select("id").eq(
-                "tenant_id", tenant_id
-            ).execute()
-
-            if existing.data:
-                self.db.table("whatsapp_configs").update({
-                    "seller_phone": seller_phone
-                }).eq("tenant_id", tenant_id).execute()
-            else:
-                self.db.table("whatsapp_configs").insert({
-                    "tenant_id": tenant_id,
-                    "seller_phone": seller_phone,
-                    "phone_number_id": "",
-                    "access_token": "",
-                }).execute()
-
+            upsert_seller_phone(self.db, tenant_id, seller_phone)
             logger.info(f"Updated seller phone for tenant {tenant_id}")
         except Exception as e:
             logger.error(f"Error updating seller phone: {e}")

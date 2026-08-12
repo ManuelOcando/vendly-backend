@@ -8,6 +8,7 @@ import asyncio
 from datetime import datetime
 
 from db.supabase import get_supabase_client
+from db.whatsapp_config import fetch_config
 from services.whatsapp.handlers import (
     MenuHandler, WelcomeHandler, ProductOrderHandler, ConfirmationHandler,
     CartHandler, CartConfirmationHandler, SellerMenuHandler, LLMHandler,
@@ -315,8 +316,7 @@ class MetaWhatsAppBotService:
     async def _get_tenant_config(self, tenant_id: str) -> Dict[str, Any]:
         """Get tenant WhatsApp configuration"""
         try:
-            result = self.db.table("whatsapp_configs").select("*").eq("tenant_id", tenant_id).execute()
-            return result.data[0] if result.data else {}
+            return fetch_config(self.db, tenant_id) or {}
         except Exception as e:
             logger.error(f"Error getting tenant config: {e}")
             return {}
@@ -369,14 +369,10 @@ class MetaWhatsAppBotService:
         phone in all deployments.
         """
         try:
-            result = self.db.table("whatsapp_configs").select("*").eq(
-                "tenant_id", tenant_id
-            ).execute()
+            config = fetch_config(self.db, tenant_id)
 
-            if not result.data:
+            if not config:
                 return False
-
-            config = result.data[0]
 
             # Prefer seller_phone if the column exists and has a value
             seller_phone = config.get("seller_phone")
@@ -452,12 +448,12 @@ class MetaWhatsAppBotService:
                 logger.info(f"Found {len(alerts)} alerts for tenant {tenant_id}")
                 
                 # Get seller phone to send alerts
-                config_result = self.db.table("whatsapp_configs").select(
-                    "seller_phone, phone_number, phone_number_id, access_token"
-                ).eq("tenant_id", tenant_id).execute()
-                
-                if config_result.data:
-                    config = config_result.data[0]
+                config = fetch_config(
+                    self.db, tenant_id,
+                    "seller_phone, phone_number, phone_number_id, access_token",
+                )
+
+                if config:
                     seller_phone = config.get("seller_phone") or config.get("phone_number")
                     phone_number_id = config.get("phone_number_id")
                     

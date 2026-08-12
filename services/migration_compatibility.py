@@ -218,10 +218,11 @@ class MigrationCompatibilityChecker:
             # Check for deprecated endpoints/features
             # Legacy WhatsApp config structure check
             try:
-                whatsapp_result = self.db.table("whatsapp_configs").select("*").eq(
-                    "tenant_id", tenant_id
-                ).execute()
-                
+                # Sin select("*"): traia el access_token cifrado para no usarlo.
+                whatsapp_result = self.db.table("whatsapp_configs").select(
+                    "id, phone_number_id"
+                ).eq("tenant_id", tenant_id).execute()
+
                 if whatsapp_result.data:
                     config = whatsapp_result.data[0]
                     if "instance_id" not in config and "phone_number_id" not in config:
@@ -441,10 +442,10 @@ class MigrationCompatibilityChecker:
             
             # Check for WhatsApp configuration
             try:
-                whatsapp_result = self.db.table("whatsapp_configs").select("*").eq(
+                whatsapp_result = self.db.table("whatsapp_configs").select("id").eq(
                     "tenant_id", tenant_id
                 ).execute()
-                
+
                 if not whatsapp_result.data:
                     warnings.append("No WhatsApp configuration found - setup required")
                     setup_required.append("whatsapp")

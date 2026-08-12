@@ -5,6 +5,8 @@ Documentación: https://developers.facebook.com/docs/whatsapp/cloud-api
 import os
 import re
 import requests
+
+from db.whatsapp_config import fetch_config
 from typing import Optional, Dict, Any
 import logging
 
@@ -29,9 +31,7 @@ class MetaWhatsAppService:
         tests can hand over a fake.
         """
         try:
-            result = db.table("whatsapp_configs").select(
-                "phone_number_id, access_token"
-            ).eq("tenant_id", tenant_id).limit(1).execute()
+            config = fetch_config(db, tenant_id, "phone_number_id, access_token")
         except Exception as e:
             logger.error(
                 "Could not read WhatsApp credentials for tenant %s: %s",
@@ -39,11 +39,10 @@ class MetaWhatsAppService:
             )
             return None
 
-        if not result.data:
+        if not config:
             logger.error("Tenant %s has no whatsapp_configs row", tenant_id)
             return None
 
-        config = result.data[0]
         phone_number_id = config.get("phone_number_id")
         access_token = config.get("access_token")
 
@@ -78,7 +77,12 @@ class MetaWhatsAppService:
     def verify_credentials(self) -> Dict[str, Any]:
         """Verificar que las credenciales son válidas"""
         try:
-            logger.info(f"Verifying credentials - Phone ID: {self.phone_number_id}, Token prefix: {self.access_token[:15] if self.access_token else 'None'}...")
+            # Sin el prefijo del token: quince caracteres no bastan para usarlo,
+            # pero es un fragmento de credencial en un log que va a Render.
+            logger.info(
+                "Verifying credentials - Phone ID: %s, token presente: %s",
+                self.phone_number_id, bool(self.access_token),
+            )
             
             response = requests.get(
                 f"{self.BASE_URL}/me",
@@ -192,7 +196,7 @@ class MetaWhatsAppService:
         logger.info(f"=== SENDING MESSAGE ===")
         logger.info(f"To: {to}, Message length: {len(message)}")
         logger.info(f"Using phone_number_id: {self.phone_number_id}")
-        logger.info(f"Token prefix: {self.access_token[:15] if self.access_token else 'None'}...")
+        logger.info(f"Token presente: {bool(self.access_token)}")
 
         phone = self.normalize_phone(to)
         logger.info(f"Formatted phone: {phone}")

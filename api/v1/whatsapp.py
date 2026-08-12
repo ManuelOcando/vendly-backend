@@ -14,8 +14,15 @@ import asyncio
 from dataclasses import dataclass, field
 
 from api.deps import get_current_tenant
+from db.whatsapp_config import (
+    delete_config,
+    fetch_config,
+    find_tenant_id_by_phone_number_id,
+    save_config,
+)
 from middleware.rate_limiter import limiter
 from services.whatsapp.meta_service import MetaWhatsAppService
+from db.token_crypto import TokenEncryptionUnavailable
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -84,16 +91,14 @@ async def get_whatsapp_health(tenant: dict = Depends(get_current_tenant)):
     db = get_supabase_client()
     
     # Obtener config del tenant
-    result = db.table("whatsapp_configs").select("*").eq("tenant_id", tenant["id"]).execute()
-    
-    if not result.data:
+    config = fetch_config(db, tenant["id"])
+
+    if not config:
         return {
             "configured": False,
             "message": "WhatsApp no configurado. Ve a Configuración > WhatsApp."
         }
-    
-    config = result.data[0]
-    
+
     # Verificar credenciales
     service = MetaWhatsAppService(
         phone_number_id=config.get("phone_number_id"),
@@ -125,13 +130,11 @@ async def get_whatsapp_config(tenant: dict = Depends(get_current_tenant)):
     from db.supabase import get_supabase_client
     
     db = get_supabase_client()
-    result = db.table("whatsapp_configs").select("*").eq("tenant_id", tenant["id"]).execute()
-    
-    if not result.data:
+    config = fetch_config(db, tenant["id"])
+
+    if not config:
         return {"configured": False}
-    
-    config = result.data[0]
-    
+
     # Mask token for security
     token = config.get("access_token", "")
     masked_token = mask_token(token)
@@ -206,24 +209,18 @@ async def save_whatsapp_config(
             config_data["phone_number"] = data.phone_number
         
         logger.info(f"Config data prepared: {config_data.keys()}")
-        
-        # Verificar si ya existe
+
+        # save_config cifra el access_token antes de escribirlo. Si no hay clave
+        # configurada lanza TokenEncryptionUnavailable y no guarda nada: preferimos
+        # fallar a guardar la credencial en claro creyendo que la ciframos.
         try:
-            existing = db.table("whatsapp_configs").select("id").eq("tenant_id", tenant["id"]).execute()
-            logger.info(f"Existing config check: {len(existing.data) if existing.data else 0} found")
-        except Exception as e:
-            logger.error(f"Error checking existing config: {e}")
-            existing = None
-        
-        # Insert o Update
-        try:
-            if existing and existing.data:
-                result = db.table("whatsapp_configs").update(config_data).eq("tenant_id", tenant["id"]).execute()
-                logger.info("Config updated successfully")
-            else:
-                config_data["created_at"] = datetime.now().isoformat()
-                result = db.table("whatsapp_configs").insert(config_data).execute()
-                logger.info("Config inserted successfully")
+            save_config(db, tenant["id"], config_data)
+        except TokenEncryptionUnavailable:
+            logger.error("WHATSAPP_TOKEN_ENCRYPTION_KEY no configurada; no se guarda el token")
+            raise HTTPException(
+                status_code=500,
+                detail="El servidor no puede almacenar credenciales de forma segura. Avisa al administrador.",
+            )
         except Exception as e:
             logger.error(f"Database error: {e}")
             raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
@@ -380,13 +377,9 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
                         
                         logger.info(f"Looking for tenant with phone_number_id: {phone_number_id}")
                         
-                        result = db.table("whatsapp_configs").select("tenant_id, phone_number_id").eq("phone_number_id", phone_number_id).execute()
-                        
-                        logger.info(f"Tenant lookup result: {result.data}")
-                        
-                        if result.data:
-                            tenant_id = result.data[0]["tenant_id"]
-                            
+                        tenant_id = find_tenant_id_by_phone_number_id(db, phone_number_id)
+
+                        if tenant_id:
                             logger.info(f"✓ Message from {phone} to tenant {tenant_id}: {text}")
                             
                             # Procesar mensaje (con buffering para múltiples mensajes)
@@ -449,14 +442,14 @@ async def _process_buffered_messages(tenant_id: str, phone: str, phone_id: str):
         
         # Obtener token del tenant
         db = get_supabase_client()
-        result = db.table("whatsapp_configs").select("access_token").eq("tenant_id", tenant_id).execute()
-        
-        if not result.data:
+        config = fetch_config(db, tenant_id, "access_token")
+
+        if not config:
             logger.error(f"No config found for tenant {tenant_id}")
             return
-        
-        token = result.data[0]["access_token"]
-        
+
+        token = config["access_token"]
+
         # Crear instancia del servicio para responder
         service = MetaWhatsAppService(phone_number_id=phone_id, access_token=token)
         
@@ -542,10 +535,10 @@ async def process_meta_message(tenant_id: str, phone: str, text: str, phone_id: 
             from db.supabase import get_supabase_client
             
             db = get_supabase_client()
-            result = db.table("whatsapp_configs").select("access_token").eq("tenant_id", tenant_id).execute()
-            
-            if result.data:
-                token = result.data[0]["access_token"]
+            config = fetch_config(db, tenant_id, "access_token")
+
+            if config:
+                token = config["access_token"]
                 service = MetaWhatsAppService(phone_number_id=phone_id, access_token=token)
                 response = await bot_service.process_message(tenant_id, phone, text, phone_id)
                 
@@ -565,13 +558,11 @@ async def send_whatsapp_message(
     db = get_supabase_client()
     
     # Obtener config
-    result = db.table("whatsapp_configs").select("*").eq("tenant_id", tenant["id"]).execute()
-    
-    if not result.data:
+    config = fetch_config(db, tenant["id"])
+
+    if not config:
         raise HTTPException(status_code=404, detail="WhatsApp no configurado")
-    
-    config = result.data[0]
-    
+
     # Crear servicio y enviar
     service = MetaWhatsAppService(
         phone_number_id=config["phone_number_id"],
@@ -591,13 +582,11 @@ async def get_message_templates(tenant: dict = Depends(get_current_tenant)):
     from db.supabase import get_supabase_client
     
     db = get_supabase_client()
-    result = db.table("whatsapp_configs").select("*").eq("tenant_id", tenant["id"]).execute()
-    
-    if not result.data:
+    config = fetch_config(db, tenant["id"])
+
+    if not config:
         raise HTTPException(status_code=404, detail="WhatsApp no configurado")
-    
-    config = result.data[0]
-    
+
     service = MetaWhatsAppService(
         phone_number_id=config["phone_number_id"],
         access_token=config["access_token"]
@@ -660,6 +649,6 @@ async def delete_whatsapp_config(tenant: dict = Depends(get_current_tenant)):
     from db.supabase import get_supabase_client
     
     db = get_supabase_client()
-    db.table("whatsapp_configs").delete().eq("tenant_id", tenant["id"]).execute()
+    delete_config(db, tenant["id"])
     
     return {"status": "deleted", "message": "Configuración eliminada"}

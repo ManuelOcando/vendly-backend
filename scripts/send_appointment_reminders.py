@@ -27,6 +27,7 @@ import logging
 sys.path.append(str(Path(__file__).parent.parent))
 
 from db.supabase import get_supabase_client
+from db.whatsapp_config import fetch_config
 from services.scheduling_service import SchedulingService
 from services.whatsapp.meta_service import MetaWhatsAppService
 
@@ -56,11 +57,9 @@ async def _send_reminder(db, appointment: dict, kind: str) -> bool:
     customer_phone = appointment["customer_phone"]
 
     try:
-        config_result = db.table("whatsapp_configs").select(
-            "phone_number_id, access_token"
-        ).eq("tenant_id", tenant_id).limit(1).execute()
+        config = fetch_config(db, tenant_id, "phone_number_id, access_token")
 
-        if not config_result.data:
+        if not config:
             logger.warning(f"No whatsapp_configs for tenant {tenant_id}, skipping reminder")
             return False
 
@@ -77,7 +76,6 @@ async def _send_reminder(db, appointment: dict, kind: str) -> bool:
             f"({scheduled_at.strftime('%d/%m/%Y a las %H:%M')})."
         )
 
-        config = config_result.data[0]
         MetaWhatsAppService(
             phone_number_id=config["phone_number_id"],
             access_token=config["access_token"],

@@ -9,6 +9,7 @@ from datetime import datetime
 
 from .base import BaseWhatsAppHandler
 from db.redis import get_redis_client
+from db.whatsapp_config import fetch_config
 from services.whatsapp.meta_service import MetaWhatsAppService
 from services.customer_profile import CustomerProfileService
 from services.recommendation_engine import RecommendationEngine
@@ -587,12 +588,12 @@ class CartConfirmationHandler(BaseWhatsAppHandler):
 
             # Notify seller about new order
             try:
-                config_result = self.db.table("whatsapp_configs").select(
-                    "seller_phone, phone_number, phone_number_id, access_token"
-                ).eq("tenant_id", tenant_id).limit(1).execute()
+                config = fetch_config(
+                    self.db, tenant_id,
+                    "seller_phone, phone_number, phone_number_id, access_token",
+                )
 
-                if config_result.data:
-                    config = config_result.data[0]
+                if config:
                     seller_phone = config.get("seller_phone") or config.get("phone_number")
 
                     if seller_phone and seller_phone != phone:

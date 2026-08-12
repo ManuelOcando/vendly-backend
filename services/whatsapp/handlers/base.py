@@ -6,6 +6,8 @@ from typing import Dict, Any, Optional
 import logging
 from datetime import datetime
 
+from db.whatsapp_config import fetch_config
+
 logger = logging.getLogger(__name__)
 
 class MessageHandler(ABC):
@@ -46,8 +48,7 @@ class BaseWhatsAppHandler(MessageHandler):
     async def get_tenant_config(self, tenant_id: str) -> Dict[str, Any]:
         """Get tenant configuration"""
         try:
-            result = self.db.table("whatsapp_configs").select("*").eq("tenant_id", tenant_id).execute()
-            return result.data[0] if result.data else {}
+            return fetch_config(self.db, tenant_id) or {}
         except Exception as e:
             logger.error(f"Error getting tenant config: {e}")
             return {}

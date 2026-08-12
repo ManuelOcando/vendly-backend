@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     
     # CORS
     FRONTEND_URL: str = "http://localhost:3000"
+
+    # Cifra whatsapp_configs.access_token. Vive aqui, en el entorno, y no en la
+    # base: esa separacion es lo unico que hace util el cifrado. Generar con
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # Ver db/token_crypto.py
+    WHATSAPP_TOKEN_ENCRYPTION_KEY: str = ""
     
     class Config:
         env_file = ".env"
@@ -79,7 +85,11 @@ class Settings(BaseSettings):
         if not self.DEBUG:
             required_vars = [
                 "SUPABASE_URL",
-                "SUPABASE_SECRET_KEY"
+                "SUPABASE_SECRET_KEY",
+                # Sin ella, guardar un token de Meta lanza excepcion. Preferimos
+                # que el arranque falle a que falle el primer comerciante que
+                # intente conectar su WhatsApp.
+                "WHATSAPP_TOKEN_ENCRYPTION_KEY",
             ]
             
             missing_vars = []

@@ -1,5 +1,25 @@
 """Fixtures compartidas por toda la suite."""
+import os
+
 import pytest
+
+# WHATSAPP_TOKEN_ENCRYPTION_KEY es obligatoria cuando DEBUG es false, y el .env
+# local no define DEBUG, asi que su valor por defecto (false) hace que la suite
+# se comporte como produccion: sin esto, todo modulo que importe main revienta
+# al construir Settings.
+#
+# Se pone aqui, a nivel de modulo y no en una fixture, porque pytest importa
+# conftest antes que los modulos de test, y Settings se construye al importar
+# main. Una fixture llegaria tarde.
+#
+# La clave es de juguete y no protege nada: los tests que ejercitan el cifrado
+# generan la suya con Fernet.generate_key().
+# Es base64 de "never-use-this-key-in-production", 32 bytes exactos, que es lo
+# que Fernet exige.
+os.environ.setdefault(
+    "WHATSAPP_TOKEN_ENCRYPTION_KEY",
+    "bmV2ZXItdXNlLXRoaXMta2V5LWluLXByb2R1Y3Rpb24=",
+)
 
 
 @pytest.fixture(autouse=True)

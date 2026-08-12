@@ -12,6 +12,7 @@ from datetime import datetime
 import logging
 
 from db.supabase import get_supabase_client
+from db.whatsapp_config import fetch_config
 from services.whatsapp.meta_service import MetaWhatsAppService
 from services.i18n import DEFAULT_LANGUAGE, t
 
@@ -108,15 +109,14 @@ class PostSaleService:
         """Best-effort seller notification - mirrors the pattern already used
         for new-order notifications in CartConfirmationHandler."""
         try:
-            config_result = self.db.table("whatsapp_configs").select(
-                "seller_phone, phone_number, phone_number_id, access_token"
-            ).eq("tenant_id", tenant_id).limit(1).execute()
+            config = fetch_config(
+                self.db, tenant_id,
+                "seller_phone, phone_number, phone_number_id, access_token",
+            )
 
-            if not config_result.data:
+            if not config:
                 logger.warning(f"No whatsapp_configs found for tenant {tenant_id}, skipping notification")
                 return
-
-            config = config_result.data[0]
             seller_phone = config.get("seller_phone") or config.get("phone_number")
 
             if not seller_phone or seller_phone == customer_phone:
@@ -157,14 +157,10 @@ class PostSaleService:
         their session to capture the next numeric reply as that rating."""
         customer_phone = request["customer_phone"]
         try:
-            config_result = self.db.table("whatsapp_configs").select(
-                "phone_number_id, access_token"
-            ).eq("tenant_id", tenant_id).limit(1).execute()
+            config = fetch_config(self.db, tenant_id, "phone_number_id, access_token")
 
-            if not config_result.data:
+            if not config:
                 return
-
-            config = config_result.data[0]
 
             # Read the session first: it carries the language this customer
             # has been conversing in, so the push goes out in that language.

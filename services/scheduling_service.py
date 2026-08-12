@@ -12,6 +12,7 @@ from datetime import datetime, date, time, timedelta
 import logging
 
 from db.supabase import get_supabase_client
+from db.whatsapp_config import fetch_config
 from services.whatsapp.meta_service import MetaWhatsAppService
 
 logger = logging.getLogger(__name__)
@@ -240,14 +241,13 @@ class SchedulingService:
         """Best-effort seller notification, mirroring the pattern already
         used for new-order notifications in CartConfirmationHandler."""
         try:
-            config_result = self.db.table("whatsapp_configs").select(
-                "seller_phone, phone_number, phone_number_id, access_token"
-            ).eq("tenant_id", tenant_id).limit(1).execute()
+            config = fetch_config(
+                self.db, tenant_id,
+                "seller_phone, phone_number, phone_number_id, access_token",
+            )
 
-            if not config_result.data:
+            if not config:
                 return
-
-            config = config_result.data[0]
             seller_phone = config.get("seller_phone") or config.get("phone_number")
             customer_phone = appointment.get("customer_phone")
 

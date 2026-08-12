@@ -27,6 +27,7 @@ import logging
 sys.path.append(str(Path(__file__).parent.parent))
 
 from db.supabase import get_supabase_client
+from db.whatsapp_config import fetch_config
 from services.advanced_analytics_service import AdvancedAnalyticsService
 from services.whatsapp.meta_service import MetaWhatsAppService
 
@@ -65,15 +66,14 @@ async def send_all_daily_reports() -> int:
 
 
 async def _send_report_to_tenant(db, service: AdvancedAnalyticsService, tenant_id: str) -> bool:
-    config_result = db.table("whatsapp_configs").select(
-        "seller_phone, phone_number, phone_number_id, access_token"
-    ).eq("tenant_id", tenant_id).limit(1).execute()
+    config = fetch_config(
+        db, tenant_id, "seller_phone, phone_number, phone_number_id, access_token"
+    )
 
-    if not config_result.data:
+    if not config:
         logger.warning(f"No whatsapp_configs for tenant {tenant_id}, skipping daily report")
         return False
 
-    config = config_result.data[0]
     seller_phone = config.get("seller_phone") or config.get("phone_number")
     if not seller_phone:
         logger.warning(f"No seller phone configured for tenant {tenant_id}, skipping daily report")

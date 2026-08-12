@@ -10,6 +10,7 @@ import signal
 import sys
 
 from db.supabase import get_supabase_client
+from db.whatsapp_config import fetch_config
 from services.whatsapp.meta_service import MetaWhatsAppService
 from services.conversational_dashboard import ConversationalDashboard
 
@@ -102,15 +103,12 @@ class AlertScheduler:
             tenant = tenant_result.data[0]
             
             # Get seller phone number from WhatsApp config
-            config_result = self.db.table("whatsapp_configs").select(
-                "seller_phone, phone_number"
-            ).eq("tenant_id", tenant_id).execute()
-            
-            if not config_result.data:
+            config = fetch_config(self.db, tenant_id, "seller_phone, phone_number")
+
+            if not config:
                 logger.warning(f"WhatsApp config not found for tenant {tenant_id}")
                 return
-            
-            config = config_result.data[0]
+
             seller_phone = config.get("seller_phone") or config.get("phone_number")
             
             if not seller_phone:
@@ -147,16 +145,14 @@ class AlertScheduler:
         """Send alert message to seller via WhatsApp"""
         try:
             # Get WhatsApp phone number ID for this tenant
-            config_result = self.db.table("whatsapp_configs").select(
-                "phone_number_id, access_token"
-            ).eq("tenant_id", tenant_id).execute()
+            config = fetch_config(self.db, tenant_id, "phone_number_id, access_token")
 
-            if not config_result.data:
+            if not config:
                 logger.error(f"WhatsApp config not found for tenant {tenant_id}")
                 return
 
-            phone_number_id = config_result.data[0].get("phone_number_id")
-            access_token = config_result.data[0].get("access_token")
+            phone_number_id = config.get("phone_number_id")
+            access_token = config.get("access_token")
 
             if not phone_number_id:
                 logger.error(f"No phone_number_id found for tenant {tenant_id}")
