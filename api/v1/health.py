@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Request, Header
+from fastapi import APIRouter, Depends, Request
 from api.deps import get_current_user
 from db.supabase import get_supabase_client
 from db.redis import get_redis_client
@@ -277,55 +277,47 @@ async def llm_health_check(
 
 @router.get("/debug-auth")
 @limiter.limit("100/minute")
-async def debug_auth(request: Request, authorization: str = Header(None)):
-    """Debug endpoint to check authentication and tenant status."""
-    logger.info(f"Debug auth called with authorization: {authorization[:20] if authorization else 'None'}...")
-    
+async def debug_auth(
+    request: Request,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Diagnostico de sesion: confirma que el token vale y si hay negocio detras.
+
+    Antes no pedia autenticacion. No filtraba gran cosa -- sin token no devolvia
+    nada util, y con token devolvia el user_id de quien preguntaba, que ya
+    conoce -- pero era un oraculo de validez de tokens, una ruta abierta que
+    consultaba la base, y registraba los primeros 20 caracteres del JWT en unos
+    logs que van a Render.
+
+    get_current_user y no get_current_tenant a proposito: el caso que mas se
+    diagnostica aqui es "el token vale pero no tengo negocio", y exigir tenant
+    devolveria 404 justo entonces, que es cuando hace falta la respuesta.
+    """
     result = {
-        "has_auth_header": authorization is not None,
-        "auth_header_format": False,
-        "user_valid": False,
+        "has_auth_header": True,
+        "auth_header_format": True,
+        "user_valid": True,
         "tenant_exists": False,
-        "user_id": None,
+        "user_id": current_user["id"],
         "tenant_id": None,
-        "error": None
+        "error": None,
     }
-    
-    # Check authorization format
-    if authorization and authorization.startswith("Bearer "):
-        result["auth_header_format"] = True
-        token = authorization.replace("Bearer ", "")
-        
-        try:
-            # Check user
-            db = get_supabase_client()
-            user_response = db.auth.get_user(token)
-            if user_response and user_response.user:
-                result["user_valid"] = True
-                result["user_id"] = user_response.user.id
-                logger.info(f"User valid: {user_response.user.id}")
-                
-                # Check tenant
-                tenant_response = db.table("tenants").select("*").eq(
-                    "owner_id", user_response.user.id
-                ).execute()
-                
-                if tenant_response.data and len(tenant_response.data) > 0:
-                    result["tenant_exists"] = True
-                    result["tenant_id"] = tenant_response.data[0]["id"]
-                    logger.info(f"Tenant found: {tenant_response.data[0]['id']}")
-                else:
-                    result["error"] = "No tenant found for user"
-                    logger.warning(f"No tenant for user {user_response.user.id}")
-            else:
-                result["error"] = "Invalid token"
-                logger.warning("Invalid token")
-                
-        except Exception as e:
-            result["error"] = f"Auth error: {str(e)}"
-            logger.error(f"Auth error: {e}")
-    else:
-        result["error"] = "Missing or invalid authorization header"
-        logger.warning("Missing or invalid auth header")
-    
+
+    try:
+        db = get_supabase_client()
+        tenant_response = db.table("tenants").select("id").eq(
+            "owner_id", current_user["id"]
+        ).execute()
+
+        if tenant_response.data:
+            result["tenant_exists"] = True
+            result["tenant_id"] = tenant_response.data[0]["id"]
+        else:
+            result["error"] = "No tenant found for user"
+            logger.warning("debug-auth: usuario autenticado sin tenant")
+    except Exception as e:
+        result["error"] = f"Auth error: {str(e)}"
+        logger.error("debug-auth fallo consultando el tenant: %s", e)
+
     return result

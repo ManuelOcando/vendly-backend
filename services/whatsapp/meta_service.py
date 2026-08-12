@@ -9,6 +9,7 @@ import requests
 from db.whatsapp_config import fetch_config
 from typing import Optional, Dict, Any
 import logging
+from utils.log_privacy import tel
 
 logger = logging.getLogger(__name__)
 
@@ -194,12 +195,12 @@ class MetaWhatsAppService:
     def send_message(self, to: str, message: str) -> Dict[str, Any]:
         """Enviar mensaje de texto simple"""
         logger.info(f"=== SENDING MESSAGE ===")
-        logger.info(f"To: {to}, Message length: {len(message)}")
+        logger.info("To: %s, Message length: %d", tel(to), len(message))
         logger.info(f"Using phone_number_id: {self.phone_number_id}")
         logger.info(f"Token presente: {bool(self.access_token)}")
 
         phone = self.normalize_phone(to)
-        logger.info(f"Formatted phone: {phone}")
+        logger.info("Formatted phone: %s", tel(phone))
 
         try:
             url = self._url("/messages")
@@ -215,7 +216,8 @@ class MetaWhatsAppService:
                     "preview_url": False
                 }
             }
-            logger.info(f"Payload: {payload}")
+            # El payload lleva destinatario y texto del mensaje; solo su forma.
+            logger.info("Payload: destinatario=%s, tipo=%s", tel(payload.get("to")), payload.get("type"))
 
             response = requests.post(
                 url,
@@ -244,7 +246,7 @@ class MetaWhatsAppService:
                 }
 
         except requests.exceptions.Timeout:
-            logger.error(f"Timeout sending message to {phone}")
+            logger.error("Timeout sending message to %s", tel(phone))
             return {"status": "failed", "error": "Timeout"}
         except Exception as e:
             logger.error(f"Failed to send message: {e}")

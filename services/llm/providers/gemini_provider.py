@@ -8,6 +8,7 @@ from typing import Dict, Any, List, Optional
 import google.generativeai as genai
 from config import get_settings
 from .base import LLMProvider, language_directive as _language_directive
+from utils.log_privacy import preview
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ class GeminiProvider(LLMProvider):
             logger.info(f"Model: {self.model_name}")
             logger.info(f"Temperature: {temperature}, Max tokens: {max_tokens}")
             logger.info(f"Messages count: {len(messages)}")
-            logger.info(f"Last message preview: {messages[-1]['content'][:200] if messages else 'No messages'}")
+            logger.info("Last message preview: %s", preview(messages[-1]["content"]) if messages else "<sin mensajes>")
             
             # Convert messages to Gemini format
             gemini_messages = []
@@ -119,7 +120,7 @@ class GeminiProvider(LLMProvider):
             logger.info("🔍 Extracting content from response...")
             content = self._extract_content(response)
             logger.info(f"✅ Content extracted. Length: {len(content)} chars")
-            logger.info(f"Content preview: {content[:300]}")
+            logger.info("Content preview: %s", preview(content))
             
             # Try to parse as JSON
             try:
@@ -144,7 +145,7 @@ class GeminiProvider(LLMProvider):
                 
             except json.JSONDecodeError as e:
                 logger.error(f"❌ JSON decode error: {e}")
-                logger.error(f"Content that failed to parse: {content[:500]}")
+                logger.error("Content that failed to parse: %s", preview(content))
                 
                 # Intentar extraer JSON del texto
                 import re

@@ -15,6 +15,7 @@ from db.supabase import get_supabase_client
 from db.whatsapp_config import fetch_config
 from services.whatsapp.meta_service import MetaWhatsAppService
 from services.i18n import DEFAULT_LANGUAGE, t
+from utils.log_privacy import tel
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ class PostSaleService:
             ).limit(limit).execute()
             return result.data if result.data else []
         except Exception as e:
-            logger.error(f"Error getting recent orders for {customer_phone}: {e}")
+            logger.error("Error getting recent orders for %s: %s", tel(customer_phone), e)
             return []
 
     def format_order_status_message(
@@ -187,7 +188,7 @@ class PostSaleService:
                     "session_data": session_data
                 }).eq("id", session["id"]).execute()
         except Exception as e:
-            logger.error(f"Could not request satisfaction rating from {customer_phone}: {e}", exc_info=True)
+            logger.error("Could not request satisfaction rating from %s: %s", tel(customer_phone), e, exc_info=True)
 
     async def rate_satisfaction(self, request_id: str, rating: int) -> bool:
         """Record a 1-5 satisfaction rating for a resolved request"""

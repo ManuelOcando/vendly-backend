@@ -35,6 +35,7 @@ from models.vendly_pro import (
     DistributionLogResponse,
     AutomatedDistributionSummary
 )
+from utils.log_privacy import tel
 
 logger = logging.getLogger(__name__)
 
@@ -1528,7 +1529,7 @@ class LoyaltyService:
                         # comparing None against an int.
                         distributions_so_far = len(log_check.data or [])
                         if rule_response.max_distributions_per_customer and distributions_so_far >= rule_response.max_distributions_per_customer:
-                            logger.info(f"Customer {customer_phone} already reached max distributions for rule {rule['id']}")
+                            logger.info("Customer %s already reached max distributions for rule %s", tel(customer_phone), rule["id"])
                             continue
                         
                         # Generate coupon code
@@ -1569,10 +1570,10 @@ class LoyaltyService:
                         
                         logs.append(DistributionLogResponse(**log_insert))
                         
-                        logger.info(f"Created birthday coupon for customer {customer_phone}: {coupon_code}")
+                        logger.info("Created birthday coupon for customer %s: %s", tel(customer_phone), coupon_code)
                         
                     except Exception as e:
-                        logger.error(f"Error processing birthday coupon for customer {customer_phone}: {e}")
+                        logger.error("Error processing birthday coupon for customer %s: %s", tel(customer_phone), e)
                         
                         # Create error log
                         log_data = DistributionLogCreate(
@@ -1661,7 +1662,7 @@ class LoyaltyService:
                         # comparing None against an int.
                         distributions_so_far = len(log_check.data or [])
                         if rule_response.max_distributions_per_customer and distributions_so_far >= rule_response.max_distributions_per_customer:
-                            logger.info(f"Customer {customer_phone} already reached max distributions for rule {rule['id']}")
+                            logger.info("Customer %s already reached max distributions for rule %s", tel(customer_phone), rule["id"])
                             continue
                         
                         # Generate coupon code
@@ -1702,10 +1703,10 @@ class LoyaltyService:
                         
                         logs.append(DistributionLogResponse(**log_insert))
                         
-                        logger.info(f"Created anniversary coupon for customer {customer_phone}: {coupon_code}")
+                        logger.info("Created anniversary coupon for customer %s: %s", tel(customer_phone), coupon_code)
                         
                     except Exception as e:
-                        logger.error(f"Error processing anniversary coupon for customer {customer_phone}: {e}")
+                        logger.error("Error processing anniversary coupon for customer %s: %s", tel(customer_phone), e)
                         
                         # Create error log
                         log_data = DistributionLogCreate(

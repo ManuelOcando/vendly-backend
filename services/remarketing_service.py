@@ -17,6 +17,7 @@ from models.vendly_pro import (
     LoyaltyPointsResponse,
     LoyaltyTier
 )
+from utils.log_privacy import preview, tel
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +229,7 @@ class RemarketingService:
                     }
             else:
                 # Log reminder for manual sending (development/testing)
-                logger.info(f"[REMINDER] Would send to {customer_phone}: {message[:100]}...")
+                logger.info("[REMINDER] Would send to %s: %s", tel(customer_phone), preview(message))
                 return {
                     "success": True,
                     "message_preview": message[:100],
@@ -349,7 +350,7 @@ class RemarketingService:
                         "error": result.get("error", "Failed to send message")
                     }
             else:
-                logger.info(f"[SUGGESTION] Would send to {customer_phone}: {message[:100]}...")
+                logger.info("[SUGGESTION] Would send to %s: %s", tel(customer_phone), preview(message))
                 return {
                     "success": True,
                     "message_preview": message[:100],
@@ -457,7 +458,7 @@ class RemarketingService:
                         "error": result.get("error", "Failed to send message")
                     }
             else:
-                logger.info(f"[NOTIFICATION] Would send to {customer_phone}: {message[:100]}...")
+                logger.info("[NOTIFICATION] Would send to %s: %s", tel(customer_phone), preview(message))
                 return {
                     "success": True,
                     "message_preview": message[:100],
@@ -586,7 +587,7 @@ class RemarketingService:
                 session_data = result.data[0].get("session_data") or {}
                 return normalize_language(session_data.get("language"))
         except Exception as e:
-            logger.error(f"Could not read language for {customer_phone}: {e}", exc_info=True)
+            logger.error("Could not read language for %s: %s", tel(customer_phone), e, exc_info=True)
         return DEFAULT_LANGUAGE
 
     async def _get_customer_profile(

@@ -18,6 +18,7 @@ from services.conversational_dashboard import ConversationalDashboard
 from services.offline_mode_service import OfflineModeService
 from services.i18n import DEFAULT_LANGUAGE, detect_language, normalize_language, t
 from api.deps import tenant_has_feature
+from utils.log_privacy import preview, tel
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ class MetaWhatsAppBotService:
         """Process incoming message and return response"""
         language = DEFAULT_LANGUAGE
         try:
-            logger.info(f"Processing message from {phone} for tenant {tenant_id}: {message[:50]}...")
+            logger.info("Processing message from %s for tenant %s: %s", tel(phone), tenant_id, preview(message))
             
             # Get tenant information
             tenant = await self._get_tenant(tenant_id)
@@ -174,7 +175,7 @@ class MetaWhatsAppBotService:
                 status="delivered"
             )
             
-            logger.info(f"Bot response: {response[:100]}...")
+            logger.info("Bot response: %s", preview(response))
             
             # Check for smart alerts in background (non-blocking)
             if not is_seller:  # Only check alerts for customer messages
@@ -480,7 +481,7 @@ class MetaWhatsAppBotService:
                                     alert_message,
                                 )
                                 if result.get("status") == "sent":
-                                    logger.info(f"Alert sent to seller {seller_phone}")
+                                    logger.info("Alert sent to seller %s", tel(seller_phone))
                                 else:
                                     logger.error(
                                         "Alert to %s failed: %s",

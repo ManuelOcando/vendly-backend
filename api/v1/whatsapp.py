@@ -23,6 +23,7 @@ from db.whatsapp_config import (
 from middleware.rate_limiter import limiter
 from services.whatsapp.meta_service import MetaWhatsAppService
 from db.token_crypto import TokenEncryptionUnavailable
+from utils.log_privacy import preview, tel
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -162,7 +163,10 @@ async def save_whatsapp_config(
         db = get_supabase_client()
         
         logger.info(f"Saving WhatsApp config for tenant {tenant['id']}")
-        logger.info(f"Phone ID: {data.phone_number_id}, Business ID: {data.business_account_id}, Phone: {data.phone_number}")
+        logger.info(
+            "Phone ID: %s, Business ID: %s, Phone: %s",
+            data.phone_number_id, data.business_account_id, tel(data.phone_number),
+        )
         
         # Verificar credenciales contra Meta Graph API
         service = MetaWhatsAppService(
@@ -337,8 +341,10 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     try:
         data = json.loads(raw_body)
         logger.info(f"=== WEBHOOK POST RECEIVED ===")
-        logger.info(f"Full payload: {json.dumps(data)[:1000]}")
-        
+        # El payload entero eran 1000 caracteres con el telefono y el texto del
+        # cliente en cada linea de log. Lo que servia para depurar era la forma,
+        # y esa se registra unas lineas mas abajo: entries, changes y messages.
+
         # Procesar entries
         entries_count = len(data.get("entry", []))
         logger.info(f"Entries count: {entries_count}")
@@ -360,7 +366,10 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
                         text = message.get("text", {}).get("body", "")
                         message_id = message.get("id")  # Unique message ID from Meta
                         
-                        logger.info(f"Message details - ID: {message_id}, From: {phone}, Body: {text}")
+                        logger.info(
+                            "Message details - ID: %s, From: %s, Body: %s",
+                            message_id, tel(phone), preview(text),
+                        )
                         
                         # DEDUPLICATION: Skip if we've already processed this message
                         if message_id and _is_message_processed(message_id):
@@ -380,7 +389,7 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
                         tenant_id = find_tenant_id_by_phone_number_id(db, phone_number_id)
 
                         if tenant_id:
-                            logger.info(f"✓ Message from {phone} to tenant {tenant_id}: {text}")
+                            logger.info("✓ Message from %s to tenant %s: %s", tel(phone), tenant_id, preview(text))
                             
                             # Procesar mensaje (con buffering para múltiples mensajes)
                             background_tasks.add_task(
@@ -431,10 +440,10 @@ async def _process_buffered_messages(tenant_id: str, phone: str, phone_id: str):
         combined_text = combine_messages(messages)
         
         logger.info("=" * 60)
-        logger.info(f"🔄 PROCESSING BUFFERED MESSAGES for {phone}")
+        logger.info("🔄 PROCESSING BUFFERED MESSAGES for %s", tel(phone))
         logger.info(f"   Total messages: {len(messages)}")
         logger.info(f"   Message IDs: {message_ids}")
-        logger.info(f"   Combined text: {combined_text[:200]}...")
+        logger.info("   Combined text: %s", preview(combined_text))
         logger.info("=" * 60)
         
         from services.whatsapp.meta_bot_service import bot_service
@@ -459,10 +468,10 @@ async def _process_buffered_messages(tenant_id: str, phone: str, phone_id: str):
         
         # Enviar respuesta
         if response:
-            logger.info(f"Sending response to {phone}")
+            logger.info("Sending response to %s", tel(phone))
             service.send_message(phone, response)
         else:
-            logger.warning(f"No response generated for combined message: {combined_text[:100]}")
+            logger.warning("No response generated for combined message: %s", preview(combined_text))
             
     except Exception as e:
         logger.error(f"ERROR in _process_buffered_messages: {e}")
@@ -478,7 +487,7 @@ async def process_meta_message(tenant_id: str, phone: str, text: str, phone_id: 
     global _message_buffers
     
     try:
-        logger.info(f"📩 NEW MESSAGE from {phone}: {text[:50]}")
+        logger.info("📩 NEW MESSAGE from %s: %s", tel(phone), preview(text))
         
         buffer_key = f"{tenant_id}:{phone}"  # Canonical key format: "{tenant_id}:{phone}"
         
@@ -489,7 +498,7 @@ async def process_meta_message(tenant_id: str, phone: str, text: str, phone_id: 
             # Cancel existing timer
             if buffer.timer and not buffer.timer.done():
                 buffer.timer.cancel()
-                logger.info(f"⏹️ Cancelled existing timer for {phone}")
+                logger.info("⏹️ Cancelled existing timer for %s", tel(phone))
             
             # Add message to buffer
             buffer.messages.append(text)
@@ -511,12 +520,12 @@ async def process_meta_message(tenant_id: str, phone: str, text: str, phone_id: 
                 message_ids=[message_id] if message_id else [],
                 last_updated=datetime.utcnow()
             )
-            logger.info(f"🆕 Created new buffer for {phone}")
+            logger.info("🆕 Created new buffer for %s", tel(phone))
         
         # Start new timer to process after delay
         async def delayed_process():
             await asyncio.sleep(BUFFER_TIMEOUT_SECONDS)
-            logger.info(f"⏰ Timer expired for {phone}, processing buffered messages...")
+            logger.info("⏰ Timer expired for %s, processing buffered messages...", tel(phone))
             await _process_buffered_messages(tenant_id, phone, phone_id)
         
         # Store the timer task

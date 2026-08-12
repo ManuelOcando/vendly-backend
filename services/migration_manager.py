@@ -16,6 +16,7 @@ from models.vendly_pro import (
     LoyaltyPointsCreate,
     LoyaltyPointsResponse,
 )
+from utils.log_privacy import tel
 
 logger = logging.getLogger(__name__)
 
@@ -391,7 +392,7 @@ class MigrationManager:
                         migrated_count += 1
                         
                 except Exception as e:
-                    logger.error(f"Failed to migrate customer {phone}: {e}", exc_info=True)
+                    logger.error("Failed to migrate customer %s: %s", tel(phone), e, exc_info=True)
                     skipped_count += 1
             
             return {

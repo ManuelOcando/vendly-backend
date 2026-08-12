@@ -7,6 +7,7 @@ import logging
 import httpx
 from typing import Dict, Any, List, Optional
 from .base import LLMProvider, language_directive as _language_directive
+from utils.log_privacy import preview
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,7 @@ class OpenRouterProvider(LLMProvider):
                     logger.info(f"Successfully parsed OpenRouter response: {parsed.get('intention', 'unknown')}")
                     return parsed
                 except json.JSONDecodeError:
-                    logger.warning(f"Response is not valid JSON: {content[:200]}")
+                    logger.warning("Response is not valid JSON: %s", preview(content))
                     return {
                         "intention": "other",
                         "response_text": content,

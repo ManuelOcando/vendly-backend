@@ -15,6 +15,7 @@ import logging
 from .base import BaseWhatsAppHandler
 from services.scheduling_service import SchedulingService
 from services.i18n import DEFAULT_LANGUAGE, matches_exact_intent, matches_intent, t
+from utils.log_privacy import tel
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +224,7 @@ class ServiceSchedulingHandler(BaseWhatsAppHandler):
                 "scheduled_at", desc=False
             ).limit(1).execute()
         except Exception as e:
-            logger.error(f"Error looking up appointment to cancel for {phone}: {e}")
+            logger.error("Error looking up appointment to cancel for %s: %s", tel(phone), e)
             return t("scheduling.lookup_error", language)
 
         if not result.data:

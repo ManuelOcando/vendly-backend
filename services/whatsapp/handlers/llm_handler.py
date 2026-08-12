@@ -12,6 +12,7 @@ from services.bot_personalities import resolve_personality
 from services.llm import get_llm_provider, LLMProvider
 from services.i18n import DEFAULT_LANGUAGE, matches_intent, t
 from config import get_settings
+from utils.log_privacy import preview, tel
 
 logger = logging.getLogger(__name__)
 
@@ -89,8 +90,8 @@ class LLMHandler(BaseWhatsAppHandler):
 
         try:
             logger.info("="*60)
-            logger.info(f"🟢 LLMHANDLER START - Message: '{user_message[:100]}'")
-            logger.info(f"Tenant: {tenant_id}, Phone: {phone}")
+            logger.info("🟢 LLMHANDLER START - Message: %s", preview(user_message))
+            logger.info("Tenant: %s, Phone: %s", tenant_id, tel(phone))
             logger.info("="*60)
             
             # Get available products

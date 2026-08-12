@@ -13,6 +13,7 @@ from db.supabase import get_supabase_client
 from db.whatsapp_config import fetch_config
 from services.whatsapp.meta_service import MetaWhatsAppService
 from services.conversational_dashboard import ConversationalDashboard
+from utils.log_privacy import tel
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +188,7 @@ class AlertScheduler:
                 )
 
             if success:
-                logger.info(f"Alert sent to seller {seller_phone} for tenant {tenant_name}")
+                logger.info("Alert sent to seller %s for tenant %s", tel(seller_phone), tenant_name)
                 
                 # Log the alert in database
                 await self._log_alert_sent(
@@ -196,7 +197,7 @@ class AlertScheduler:
                     alert_message=alert_message
                 )
             else:
-                logger.error(f"Failed to send alert to seller {seller_phone}")
+                logger.error("Failed to send alert to seller %s", tel(seller_phone))
                 
         except Exception as e:
             logger.error(f"Error sending alert to seller: {e}")
