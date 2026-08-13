@@ -21,6 +21,87 @@ from services.i18n import DEFAULT_LANGUAGE, matches_intent, matches_word_intent,
 
 logger = logging.getLogger(__name__)
 
+# Numeros escritos con letra, en los tres idiomas que atiende el bot. Hasta diez:
+# por encima, la gente escribe cifras.
+_NUMEROS_EN_LETRA = {
+    "un": 1, "una": 1, "uno": 1, "one": 1, "um": 1, "uma": 1,
+    "dos": 2, "two": 2, "dois": 2, "duas": 2,
+    "tres": 3, "three": 3, "tres_pt": 3,
+    "cuatro": 4, "four": 4, "quatro": 4,
+    "cinco": 5, "five": 5,
+    "seis": 6, "six": 6,
+    "siete": 7, "seven": 7, "sete": 7,
+    "ocho": 8, "eight": 8, "oito": 8,
+    "nueve": 9, "nine": 9, "nove": 9,
+    "diez": 10, "ten": 10, "dez": 10,
+}
+
+# Tope de seguridad. Nadie pide 500 hamburguesas por WhatsApp, y un numero
+# absurdo suele ser un error de tecleo o el modelo alucinando -- ya paso: invento
+# un pedido de 17 hamburguesas que nadie habia pedido.
+CANTIDAD_MAXIMA = 99
+
+_PATRON_CANTIDAD_DELANTE = re.compile(r"^\s*(\d{1,3})\s*[xX*]?\s+(.+)$")
+_PATRON_CANTIDAD_DETRAS = re.compile(r"^(.+?)\s*[xX*]\s*(\d{1,3})\s*$")
+
+# Como empieza la gente a pedir. Se quitan para que el numero quede al principio
+# ("quiero 2 hamburguesas" -> "2 hamburguesas") sin tener que buscar cifras en
+# cualquier posicion, que es lo que convertiria "pizza 4 quesos" en cuatro quesos.
+_PATRON_VERBO_INICIAL = re.compile(
+    r"^\s*(?:me\s+)?(?:quiero|quisiera|queria|querria|dame|deme|damelo|ponme|"
+    r"agrega|agregar|agregame|añade|añadir|anade|anadir|necesito|pedir|pido|"
+    r"want|i\s+want|give\s+me|add|need|"
+    r"quero|queria_pt|gostaria|me\s+ve)\s+",
+    re.IGNORECASE,
+)
+
+
+def extraer_cantidad(texto: str) -> tuple:
+    """
+    Separa la cantidad del nombre del producto: "2 hamburguesas" -> (2, "hamburguesas").
+
+    Antes no se miraba: cada producto nombrado entraba al carrito con cantidad 1,
+    asi que quien pedia dos hamburguesas recibia una. El cliente se entera al
+    llegar el pedido, que es el peor momento.
+
+    Entiende las tres formas en que la gente lo escribe -- "2 hamburguesas",
+    "dos hamburguesas", "hamburguesa x2" -- en español, ingles y portugues.
+    Devuelve (1, texto) si no encuentra ninguna.
+
+    La cantidad tiene que ir al principio (o detras de una x). Buscar cifras en
+    cualquier posicion seria mas permisivo y convertiria "pizza 4 quesos" en
+    cuatro quesos, o "refresco 2 litros" en dos refrescos.
+    """
+    if not texto:
+        return 1, texto
+
+    limpio = _PATRON_VERBO_INICIAL.sub("", texto.strip()).strip() or texto.strip()
+
+    # "hamburguesa x2"
+    m = _PATRON_CANTIDAD_DETRAS.match(limpio)
+    if m:
+        return _acotar(int(m.group(2))), m.group(1).strip()
+
+    # "2 hamburguesas" / "2x hamburguesa"
+    m = _PATRON_CANTIDAD_DELANTE.match(limpio)
+    if m:
+        return _acotar(int(m.group(1))), m.group(2).strip()
+
+    # "dos hamburguesas"
+    partes = limpio.split(maxsplit=1)
+    if len(partes) == 2:
+        cantidad = _NUMEROS_EN_LETRA.get(partes[0].lower())
+        if cantidad:
+            return cantidad, partes[1].strip()
+
+    return 1, limpio
+
+
+def _acotar(cantidad: int) -> int:
+    """Entre 1 y CANTIDAD_MAXIMA. Un 0 es un error de tecleo, no una peticion."""
+    return max(1, min(cantidad, CANTIDAD_MAXIMA))
+
+
 class WelcomeHandler(BaseWhatsAppHandler):
     """Handles welcome messages and greetings"""
     
@@ -190,24 +271,30 @@ class ProductOrderHandler(BaseWhatsAppHandler):
             errors = []
             
             # Process each product
-            for product_name in product_names:
+            for fragmento in product_names:
+                # "2 hamburguesas" -> (2, "hamburguesas"). El nombre se busca ya
+                # sin el numero delante, que si no no casa con el del catalogo.
+                cantidad, product_name = extraer_cantidad(fragmento)
+
                 product, error = await self._find_product(tenant_id, product_name, language)
-                
+
                 if product:
                     # Check if already in cart (increment quantity)
                     existing = next((item for item in cart if item["product_id"] == product["id"]), None)
                     if existing:
-                        existing["quantity"] += 1
+                        existing["quantity"] += cantidad
                         added_products.append(f"{product['name']} x{existing['quantity']}")
                     else:
                         cart_item = {
                             "product_id": product["id"],
                             "name": product["name"],
                             "price": product["price"],
-                            "quantity": 1
+                            "quantity": cantidad
                         }
                         cart.append(cart_item)
-                        added_products.append(product['name'])
+                        added_products.append(
+                            f"{product['name']} x{cantidad}" if cantidad > 1 else product["name"]
+                        )
                 else:
                     errors.append(f"• {product_name}: {error}")
             

@@ -190,8 +190,10 @@ class TestCompleteCustomerJourney:
 
         # ProductOrderHandler añade al carrito directamente y ya pregunta si se
         # confirma: el flujo conversacional es de dos pasos, no de tres.
-        carrito = await journey.say("quiero una hamburguesa")
+        carrito = await journey.say("quiero 2 hamburguesas")
         assert "Hamburguesa" in carrito
+        # Pidio dos: tienen que ser dos, no una.
+        assert journey.session()["session_data"]["cart"][0]["quantity"] == 2
         assert journey.session()["current_state"] == "ordering"
         assert journey.session()["session_data"]["cart"], "el carrito quedo vacio"
 
@@ -203,9 +205,10 @@ class TestCompleteCustomerJourney:
         lineas = journey.fake.rows("order_items")
         assert len(lineas) == 1
         assert lineas[0]["item_name"] == "Hamburguesa"
+        assert lineas[0]["quantity"] == 2, "el pedido no llevo las dos que pidio"
 
         # Y el cliente recibe como pagar, igual que por la tienda web.
-        assert "10.00" in confirmacion
+        assert "20.00" in confirmacion
         assert journey.session()["current_state"] == "payment_pending"
         assert journey.session()["session_data"]["order_id"] == pedidos[0]["id"]
         # El carrito se vacia: un segundo "si" no debe duplicar el pedido.
