@@ -415,6 +415,34 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         "en": "Please contact the seller for payment instructions.",
         "pt": "Por favor, entre em contato com o vendedor para receber as instruções de pagamento.",
     },
+    # Datos de cobro del vendedor, compuestos al enviar y no al guardar: el bot
+    # detecta el idioma del cliente, y un texto montado al guardar quedaria
+    # clavado en el del vendedor.
+    "order.payment_header": {
+        "es": "💳 *Datos para el pago:*",
+        "en": "💳 *Payment details:*",
+        "pt": "💳 *Dados para pagamento:*",
+    },
+    "order.payment_bank": {
+        "es": "Banco: {bank}",
+        "en": "Bank: {bank}",
+        "pt": "Banco: {bank}",
+    },
+    "order.payment_id": {
+        "es": "Cédula/RIF: {id_number}",
+        "en": "ID: {id_number}",
+        "pt": "Documento: {id_number}",
+    },
+    "order.payment_phone": {
+        "es": "Teléfono: {phone}",
+        "en": "Phone: {phone}",
+        "pt": "Telefone: {phone}",
+    },
+    "order.payment_send_proof": {
+        "es": "Cuando pagues, envía el comprobante por aquí.",
+        "en": "Once you pay, send the receipt here.",
+        "pt": "Depois de pagar, envie o comprovante por aqui.",
+    },
     "order.process_error": {
         "es": "Error al procesar tu pedido. Por favor, intenta nuevamente.",
         "en": "Error processing your order. Please try again.",

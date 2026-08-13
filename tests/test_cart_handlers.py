@@ -175,6 +175,54 @@ class TestCartConfirmationHandlerPurchaseHistory:
         assert purchase_items == [{"product_id": "prod-1", "quantity": 2, "amount": 20.0}]
 
     @pytest.mark.asyncio
+    async def test_confirmation_carries_the_seller_payment_details(self):
+        """
+        El hueco que esto cerro: el bot tomaba el pedido y respondia "contacta
+        al vendedor para recibir las instrucciones de pago", asi que el cliente
+        tenia que preguntar justo en el momento de pagar.
+        """
+        mock_db = MagicMock()
+        mock_db.table.return_value.insert.return_value.execute.return_value = Mock(
+            data=[{"id": "order-123"}]
+        )
+        mock_db.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value = Mock(
+            data=[{
+                "payment_info": {
+                    "bank": "Banesco",
+                    "id_number": "V-12345678",
+                    "phone": "0412-1234567",
+                    "notes": "",
+                },
+                "payment_instructions": "",
+            }]
+        )
+
+        handler = CartConfirmationHandler(mock_db)
+
+        with patch(
+            "services.whatsapp.handlers.customer._get_cart_from_redis",
+            new=AsyncMock(return_value=SAMPLE_CART),
+        ), patch(
+            "services.whatsapp.handlers.customer.CustomerProfileService"
+        ) as mock_profile_service:
+            mock_profile_service.return_value.record_purchase = AsyncMock(return_value=[])
+
+            response = await handler.handle(make_message_data(
+                message="confirmo",
+                session={
+                    "id": "session-1",
+                    "current_state": "viewing_cart",
+                    "session_data": {"cart_id": "cart-123"},
+                },
+            ))
+
+        assert "Banesco" in response
+        assert "V-12345678" in response
+        assert "0412-1234567" in response
+        # Y no queda ningun marcador de plantilla sin sustituir.
+        assert "{" not in response
+
+    @pytest.mark.asyncio
     async def test_order_confirmation_survives_history_failure(self):
         """A broken record_purchase call must never block order confirmation."""
         mock_db = MagicMock()

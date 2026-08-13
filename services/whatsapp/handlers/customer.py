@@ -10,6 +10,7 @@ from datetime import datetime
 from .base import BaseWhatsAppHandler
 from db.redis import get_redis_client
 from db.whatsapp_config import fetch_config
+from services.payment_instructions import compose as compose_payment_instructions
 from services.whatsapp.meta_service import MetaWhatsAppService
 from services.customer_profile import CustomerProfileService
 from services.recommendation_engine import RecommendationEngine
@@ -622,14 +623,23 @@ class CartConfirmationHandler(BaseWhatsAppHandler):
                 logger.error(f"Could not notify seller for tenant {tenant_id}: {notify_err}", exc_info=True)
 
             # Send payment instructions
+            # Los datos de cobro del vendedor, en el idioma del cliente. Se
+            # componen aqui y no al guardarlos justamente por eso: un texto
+            # montado al guardar quedaria clavado en el idioma del vendedor.
             payment_instructions = t("order.payment_default", language)
             try:
                 bot_config_result = self.db.table("bot_configurations").select(
-                    "payment_instructions"
+                    "payment_info, payment_instructions"
                 ).eq("tenant_id", tenant_id).limit(1).execute()
-                
-                if bot_config_result.data and bot_config_result.data[0].get("payment_instructions"):
-                    payment_instructions = bot_config_result.data[0]["payment_instructions"]
+
+                if bot_config_result.data:
+                    fila = bot_config_result.data[0]
+                    payment_instructions = compose_payment_instructions(
+                        fila.get("payment_info"),
+                        cart["total"],
+                        language,
+                        legacy_text=fila.get("payment_instructions"),
+                    )
             except Exception as config_err:
                 logger.error(f"Could not fetch bot_configurations for tenant {tenant_id}: {config_err}", exc_info=True)
             

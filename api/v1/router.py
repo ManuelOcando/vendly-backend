@@ -3,7 +3,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from api.v1 import health, auth, items, categories, dashboard, storefront, orders, cart, customers, tenants, upload, whatsapp, legal, vendly_pro, post_sale, scheduling, analytics
+from api.v1 import health, auth, items, categories, dashboard, storefront, orders, cart, customers, tenants, upload, whatsapp, legal, vendly_pro, post_sale, scheduling, analytics, bot_config
 
 router = APIRouter(prefix="/api/v1")
 logger.info("Loading API v1 routers...")
@@ -17,6 +17,7 @@ router.include_router(dashboard.router, tags=["Dashboard"])
 router.include_router(storefront.router, tags=["Storefront (Público)"])
 router.include_router(orders.router, tags=["Orders"])
 router.include_router(whatsapp.router, prefix="/whatsapp", tags=["WhatsApp"])
+router.include_router(bot_config.router, tags=["Bot Config"])
 # cart.py declares its paths as "/create", "/{cart_id}" and so on, so without a
 # prefix they land directly under /api/v1. That made GET /api/v1/{cart_id} a
 # catch-all which, being registered before them, swallowed every single-segment
