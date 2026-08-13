@@ -10,8 +10,13 @@ import pytest
 from unittest.mock import Mock
 
 from services.whatsapp.meta_service import MetaWhatsAppService
+from db.token_crypto import encrypt_token
 
 TENANT = "tenant-abc"
+
+# La columna guarda texto cifrado, asi que los fixtures tambien. Se evalua al
+# importar el modulo, y conftest.py deja la clave puesta antes de eso.
+ENCRIPTADO_T = encrypt_token("t")
 
 
 def db_returning(rows, raises=False):
@@ -33,7 +38,8 @@ class TestForTenant:
         monkeypatch.setenv("META_WHATSAPP_TOKEN", "global-token")
 
         service = MetaWhatsAppService.for_tenant(
-            db_returning([{"phone_number_id": "tenant-phone", "access_token": "tenant-token"}]),
+            db_returning([{"phone_number_id": "tenant-phone",
+                           "access_token": encrypt_token("tenant-token")}]),
             TENANT,
         )
 
@@ -41,7 +47,7 @@ class TestForTenant:
         assert service.access_token == "tenant-token"
 
     def test_queries_the_right_tenant(self):
-        db = db_returning([{"phone_number_id": "p", "access_token": "t"}])
+        db = db_returning([{"phone_number_id": "p", "access_token": encrypt_token("t")}])
 
         MetaWhatsAppService.for_tenant(db, TENANT)
 
@@ -53,7 +59,7 @@ class TestForTenant:
 
     @pytest.mark.parametrize("row", [
         {"phone_number_id": "p", "access_token": None},
-        {"phone_number_id": None, "access_token": "t"},
+        {"phone_number_id": None, "access_token": ENCRIPTADO_T},
         {"phone_number_id": "", "access_token": ""},
         {},
     ])

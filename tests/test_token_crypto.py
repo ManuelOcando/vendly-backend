@@ -15,12 +15,14 @@ import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import pytest
 from cryptography.fernet import Fernet
 
 from db import token_crypto
 from db.token_crypto import (
+    TokenDecryptionFailed,
     TokenEncryptionUnavailable,
     decrypt_token,
     encrypt_token,
@@ -57,11 +59,28 @@ class TestIdaYVuelta:
 
 
 class TestClaveEquivocada:
-    def test_otra_clave_no_descifra(self):
+    def test_otra_clave_falla_en_vez_de_devolver_algo(self):
         cifrado = encrypt_token(TOKEN, key=CLAVE)
-        # Tolerante: devuelve el valor tal cual en vez de reventar. Lo que no
-        # hace, y es lo que importa, es entregar el token.
-        assert decrypt_token(cifrado, key=OTRA_CLAVE) != TOKEN
+        with pytest.raises(TokenDecryptionFailed):
+            decrypt_token(cifrado, key=OTRA_CLAVE)
+
+    def test_el_error_nombra_las_dos_causas_posibles(self):
+        """
+        Quien lo lea a las tres de la manana tiene que saber por donde empezar:
+        o falta el backfill, o la clave del entorno no es la que cifro.
+        """
+        cifrado = encrypt_token(TOKEN, key=CLAVE)
+        with pytest.raises(TokenDecryptionFailed) as e:
+            decrypt_token(cifrado, key=OTRA_CLAVE)
+        assert "encrypt_whatsapp_tokens" in str(e.value)
+        assert "WHATSAPP_TOKEN_ENCRYPTION_KEY" in str(e.value)
+
+    def test_el_error_no_filtra_el_valor(self):
+        cifrado = encrypt_token(TOKEN, key=CLAVE)
+        with pytest.raises(TokenDecryptionFailed) as e:
+            decrypt_token(cifrado, key=OTRA_CLAVE)
+        assert cifrado not in str(e.value)
+        assert TOKEN not in str(e.value)
 
     def test_looks_encrypted_distingue_la_clave(self):
         cifrado = encrypt_token(TOKEN, key=CLAVE)
@@ -92,26 +111,42 @@ class TestSinClave:
         with pytest.raises(TokenEncryptionUnavailable):
             encrypt_token(TOKEN)
 
-    def test_descifrar_sin_clave_devuelve_el_valor(self, sin_clave):
-        """Leer sigue funcionando en desarrollo; escribir no."""
-        assert decrypt_token(TOKEN) == TOKEN
+    def test_descifrar_sin_clave_tambien_falla(self, sin_clave):
+        """
+        Sin clave no se puede descifrar, y devolver el valor tal cual seria
+        entregarle a Meta un texto cifrado.
+        """
+        with pytest.raises(TokenEncryptionUnavailable):
+            decrypt_token(TOKEN)
 
 
-class TestToleranciaDurante_ElBackfill:
+class TestUnValorEnClaroEsUnError:
     """
-    Mientras quedan filas sin convertir conviven valores cifrados y en claro.
-    Sin esta tolerancia el despliegue y el backfill tendrian que ser atomicos,
-    que es como se deja un negocio sin WhatsApp a media tarde.
+    Durante el despliegue del cifrado esto se toleraba: decrypt_token devolvia
+    el texto plano tal cual, para poder desplegar antes del backfill sin dejar
+    el bot mudo en la ventana intermedia. El backfill se hizo el 13/08/2026 y no
+    queda nada en claro, asi que la tolerancia se retiro.
+
+    Lo que la hacia peligrosa a largo plazo no era el texto plano, que ya no
+    existe, sino el otro camino que abria: si la clave de Render se rota sin
+    volver a cifrar, ningun token descifra. Devolviendo el valor tal cual, el
+    backend le mandaria a Meta el texto cifrado, Meta contestaria 401, y eso se
+    lee igual que un token caducado. Se irian horas mirando en Meta un problema
+    que esta en la clave.
     """
 
-    def test_un_token_en_claro_se_devuelve_intacto(self):
-        assert decrypt_token(TOKEN, key=CLAVE) == TOKEN
-
-    def test_y_deja_aviso_en_el_log_sin_soltar_el_valor(self, caplog):
-        with caplog.at_level("WARNING"):
+    def test_un_token_en_claro_ya_no_pasa(self):
+        with pytest.raises(TokenDecryptionFailed):
             decrypt_token(TOKEN, key=CLAVE)
-        assert "sin cifrar" in caplog.text
-        assert TOKEN not in caplog.text
+
+    def test_el_error_apunta_al_backfill(self):
+        with pytest.raises(TokenDecryptionFailed, match="encrypt_whatsapp_tokens"):
+            decrypt_token(TOKEN, key=CLAVE)
+
+    def test_los_vacios_siguen_pasando(self):
+        """La fila placeholder del onboarding nace con el token vacio."""
+        assert decrypt_token("", key=CLAVE) == ""
+        assert decrypt_token(None, key=CLAVE) is None
 
 
 class TestNadieLeeElTokenPorSuCuenta:
@@ -211,6 +246,60 @@ class TestLaClaveSeValidaAlArrancar:
         from config import Settings
 
         Settings(WHATSAPP_TOKEN_ENCRYPTION_KEY="", DEBUG=True)
+
+
+class TestUnTokenIndescifrableSaleComo503:
+    """
+    Cinco endpoints leen la configuracion de WhatsApp sin try propio. Un
+    manejador en main.py los cubre a todos, y tambien a los que se escriban
+    despues, en vez de cinco try/except que alguien olvidaria replicar.
+
+    503 y no 500: el codigo no esta roto, falta una pieza del entorno -- la
+    clave correcta -- y eso se arregla sin desplegar nada.
+    """
+
+    def test_el_endpoint_de_configuracion_responde_503_y_no_500(self):
+        from fastapi.testclient import TestClient
+
+        import main
+        from api.deps import get_current_tenant
+        from db.token_crypto import TokenDecryptionFailed
+
+        def config_que_no_descifra(*_args, **_kwargs):
+            raise TokenDecryptionFailed("no descifra")
+
+        main.app.dependency_overrides[get_current_tenant] = lambda: {"id": "t-1"}
+        try:
+            with mock.patch("api.v1.whatsapp.fetch_config", config_que_no_descifra):
+                resp = TestClient(main.app, raise_server_exceptions=False).get(
+                    "/api/v1/whatsapp/config"
+                )
+        finally:
+            main.app.dependency_overrides.clear()
+
+        assert resp.status_code == 503
+        assert "WHATSAPP_TOKEN_ENCRYPTION_KEY" in resp.json()["detail"]
+
+    def test_el_503_no_filtra_el_valor_ni_la_clave(self):
+        from fastapi.testclient import TestClient
+
+        import main
+        from api.deps import get_current_tenant
+        from db.token_crypto import TokenDecryptionFailed
+
+        def config_que_no_descifra(*_args, **_kwargs):
+            raise TokenDecryptionFailed(f"no descifra: {TOKEN}")
+
+        main.app.dependency_overrides[get_current_tenant] = lambda: {"id": "t-1"}
+        try:
+            with mock.patch("api.v1.whatsapp.fetch_config", config_que_no_descifra):
+                resp = TestClient(main.app, raise_server_exceptions=False).get(
+                    "/api/v1/whatsapp/config"
+                )
+        finally:
+            main.app.dependency_overrides.clear()
+
+        assert TOKEN not in resp.text
 
 
 class TestElAccesorSeImportaSolo:

@@ -36,6 +36,7 @@ import re
 import uuid
 
 from db.expected_schema import EXPECTED_SCHEMA
+from db.token_crypto import encrypt_token
 
 
 class SchemaError(AssertionError):
@@ -355,7 +356,8 @@ def seed_tenant(
             "seller_phone": SELLER_PHONE,
             "phone_number": SELLER_PHONE,
             "phone_number_id": "phone-id-1",
-            "access_token": "token-1",
+            # Cifrado, como en la tabla real: decrypt_token ya no tolera claro.
+            "access_token": encrypt_token("token-1"),
         }],
         "bot_configurations": [{
             "id": "bot-config-1",

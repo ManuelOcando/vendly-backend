@@ -134,6 +134,22 @@ Cifrado en la aplicación y no con `pgcrypto` **porque la clave tiene que vivir
 separada de los datos**. Con pgcrypto acaba en la propia base o en su
 configuración, y quien se lleve un volcado se lleva las dos mitades.
 
+**Un valor que no descifra es un error, no un aviso.** `decrypt_token` lanza
+`TokenDecryptionFailed`, y los endpoints lo convierten en un 503 legible vía el
+manejador de `main.py`. Durante el despliegue del cifrado esto toleraba texto
+plano y lo devolvía tal cual, para poder desplegar antes del backfill; se retiró
+el 13/08/2026, con el backfill hecho.
+
+Si algún día aparece ese 503, hay exactamente dos causas y el mensaje las nombra:
+
+- La fila quedó en claro → `python -m scripts.encrypt_whatsapp_tokens --apply`
+- `WHATSAPP_TOKEN_ENCRYPTION_KEY` no es la que cifró esa fila → revisar Render
+
+La segunda es la razón de fondo para no tolerar. Si la clave se rota sin volver
+a cifrar y devolviéramos el valor tal cual, el backend le mandaría a Meta el
+texto cifrado, Meta contestaría 401, y eso **se lee igual que un token
+caducado**: se irían horas mirando en Meta un problema que está en el entorno.
+
 Todo acceso a esa tabla pasa por `db/whatsapp_config.py`. Había 15 sitios
 leyéndola directamente, y varios usaban `select("*")`, que arrastra el token sin
 nombrarlo.
@@ -236,20 +252,15 @@ bloque `network` donde `rate_limit_key` sea la IP real y no la cadena de saltos.
 
 Cosas que sabemos y decidimos no hacer todavía. No son olvidos.
 
-1. **`decrypt_token` sigue siendo tolerante** con valores en claro. Se puso así
-   para poder desplegar antes del backfill sin dejar el bot mudo. El backfill ya
-   se hizo el 13/08/2026 y no queda nada sin cifrar, así que **esto ya puede
-   endurecerse** para que un valor no cifrado sea un error. Es lo primero de
-   esta lista por algo.
-2. **Un 500 no capturado no lleva cabeceras CORS.** El error lo genera
+1. **Un 500 no capturado no lleva cabeceras CORS.** El error lo genera
    `ServerErrorMiddleware`, por encima de `CORSMiddleware`. En el navegador se ve
    como error de CORS en vez del 500 real, lo que despista al depurar. Se
    arregla con un `@app.exception_handler(Exception)`.
-3. **Nivel y retención de logs.** Todo va a INFO. Bajar a WARNING reduciría el
+2. **Nivel y retención de logs.** Todo va a INFO. Bajar a WARNING reduciría el
    volumen, pero es una decisión operativa y no arregla *qué* se escribe, que es
    lo que sí se arregló.
-4. **Sin rotación programada de claves.** Se rotan cuando hace falta, a mano.
-5. **Sin separación de privilegios interna.** Todo el que entra al panel de
+3. **Sin rotación programada de claves.** Se rotan cuando hace falta, a mano.
+4. **Sin separación de privilegios interna.** Todo el que entra al panel de
    Render ve todo.
 
 ---

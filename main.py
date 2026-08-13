@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from db.token_crypto import TokenDecryptionFailed
 import asyncio
 import os
 from config import get_settings
@@ -37,6 +38,31 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_exception_handler)
 app.add_middleware(SlowAPIMiddleware)
+
+
+@app.exception_handler(TokenDecryptionFailed)
+async def token_decryption_failed_handler(request, exc: TokenDecryptionFailed):
+    """
+    Un access_token que no descifra sale como 503 legible, no como 500 opaco.
+
+    Cinco endpoints leen la configuracion de WhatsApp sin try propio. Un
+    manejador aqui los cubre a todos y tambien a los que se escriban despues,
+    que es mejor que cinco try/except que alguien olvidara replicar.
+
+    503 y no 500: no es que el codigo este roto, es que falta una pieza del
+    entorno -- la clave correcta -- y el estado se arregla sin desplegar nada.
+    El detalle nombra las dos causas posibles sin filtrar el valor.
+    """
+    logger.error("access_token indescifrable en %s: %s", request.url.path, exc)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": (
+                "No se puede leer la credencial de WhatsApp de este negocio. "
+                "Revisa WHATSAPP_TOKEN_ENCRYPTION_KEY en el servidor."
+            )
+        },
+    )
 
 # Routes for legal pages (required for Meta approval)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

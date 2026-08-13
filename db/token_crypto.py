@@ -31,8 +31,16 @@ logger = logging.getLogger(__name__)
 class TokenEncryptionUnavailable(RuntimeError):
     """No hay WHATSAPP_TOKEN_ENCRYPTION_KEY configurada.
 
-    Se lanza al cifrar, nunca al descifrar. Preferimos que guardar falle a
-    guardar en claro creyendo que ciframos.
+    Preferimos que guardar falle a guardar en claro creyendo que ciframos, y que
+    leer falle a devolver texto cifrado que acabaria enviado a Meta.
+    """
+
+
+class TokenDecryptionFailed(RuntimeError):
+    """El valor guardado no descifra con la clave actual.
+
+    Dos causas posibles, y el mensaje las nombra: la fila sigue en claro (falta
+    el backfill), o la clave del entorno no es la que la cifro.
     """
 
 
@@ -57,37 +65,39 @@ def encrypt_token(plain: str, *, key: Optional[str] = None) -> str:
 
 def decrypt_token(stored: str, *, key: Optional[str] = None) -> str:
     """
-    Descifra un token, tolerando que todavia este en claro.
+    Descifra un token. Un valor que no descifra es un error, no un aviso.
 
-    La tolerancia es deliberada y temporal. Permite desplegar el codigo antes
-    de convertir las filas existentes: durante esa ventana conviven valores
-    cifrados y en claro, y el bot sigue respondiendo. Sin ella el despliegue y
-    el backfill tendrian que ser atomicos, que es como se deja un negocio sin
-    WhatsApp a media tarde.
+    Durante el despliegue del cifrado esto toleraba texto plano y lo devolvia
+    tal cual, para que el codigo pudiera desplegarse antes de convertir las
+    filas y el bot no se quedara mudo en la ventana intermedia. El backfill se
+    hizo el 13/08/2026 y no queda nada en claro, asi que la tolerancia se
+    retiro.
 
-    Una vez hecho el backfill y confirmado que no queda nada en claro, esto
-    deberia endurecerse para que un valor no cifrado sea un error.
+    Por que devolver el valor tal cual era peligroso a largo plazo: si la clave
+    de Render se rota sin volver a cifrar, cada token deja de descifrar. Con la
+    tolerancia, el backend le mandaria a Meta el texto cifrado, Meta contestaria
+    401, y eso se lee igual que un token caducado -- se perderian horas mirando
+    en Meta un problema que esta en la clave. Fallando aqui, el motivo aparece
+    en la primera linea del log.
+
+    Los llamantes ya estan preparados: los catorce que leen dentro de un try
+    registran y siguen sin enviar, que es lo correcto -- no enviar es mejor que
+    enviar basura en nombre del negocio. Los endpoints lo convierten en un 503
+    legible via el manejador de main.py.
     """
     if not stored:
         return stored
 
     try:
         return _fernet(key).decrypt(stored.encode()).decode()
-    except InvalidToken:
-        # No es un texto Fernet: lo damos por un token en claro pendiente de
-        # convertir. No registramos el valor, obviamente.
-        logger.warning(
-            "access_token sin cifrar en whatsapp_configs (%d caracteres). "
-            "Pendiente de backfill: scripts/encrypt_whatsapp_tokens.py",
-            len(stored),
-        )
-        return stored
-    except TokenEncryptionUnavailable:
-        # En desarrollo sin clave, leer sigue funcionando; escribir no.
-        logger.warning(
-            "Sin WHATSAPP_TOKEN_ENCRYPTION_KEY: el access_token se lee tal cual."
-        )
-        return stored
+    except InvalidToken as e:
+        # Nunca el valor en el mensaje, solo su longitud.
+        raise TokenDecryptionFailed(
+            f"El access_token guardado no descifra con la clave actual "
+            f"({len(stored)} caracteres). O la fila quedo en claro -- ejecutar "
+            f"scripts/encrypt_whatsapp_tokens.py --apply -- o "
+            f"WHATSAPP_TOKEN_ENCRYPTION_KEY no es la que lo cifro."
+        ) from e
 
 
 def looks_encrypted(stored: str, *, key: Optional[str] = None) -> bool:

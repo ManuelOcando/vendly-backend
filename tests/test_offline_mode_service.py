@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from services.offline_mode_service import OfflineModeService, parse_weekly_schedule
+from db.token_crypto import encrypt_token
 
 
 def make_table_router(canned: dict):
@@ -330,7 +331,7 @@ class TestNotifySellerOfPendingMessages:
             ]),
             "whatsapp_configs": Mock(data=[{
                 "seller_phone": "+5550001111", "phone_number": "+5550001111",
-                "phone_number_id": "phone-id", "access_token": "token",
+                "phone_number_id": "phone-id", "access_token": encrypt_token("token"),
             }]),
         }))
         service = OfflineModeService(db=db)

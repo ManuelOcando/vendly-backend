@@ -5,6 +5,7 @@ import pytest
 from unittest.mock import Mock, MagicMock, patch
 
 from services.post_sale_service import PostSaleService
+from db.token_crypto import encrypt_token
 
 
 def make_table_router(canned: dict):
@@ -55,7 +56,7 @@ class TestCreateRequest:
             "post_sale_requests": Mock(data=[{"id": "req-1", "status": "open"}]),
             "whatsapp_configs": Mock(data=[{
                 "seller_phone": "+5550001111", "phone_number": "+5550001111",
-                "phone_number_id": "phone-id", "access_token": "token",
+                "phone_number_id": "phone-id", "access_token": encrypt_token("token"),
             }]),
         }))
         service = PostSaleService(db=db)
@@ -98,7 +99,7 @@ class TestResolveRequest:
         db = MagicMock()
         db.table = Mock(side_effect=make_table_router({
             "post_sale_requests": Mock(data=[{"id": "req-1", "customer_phone": "+123", "status": "resolved"}]),
-            "whatsapp_configs": Mock(data=[{"phone_number_id": "phone-id", "access_token": "token"}]),
+            "whatsapp_configs": Mock(data=[{"phone_number_id": "phone-id", "access_token": encrypt_token("token")}]),
             "conversation_sessions": Mock(data=[{"id": "session-1", "session_data": {"cart": []}}]),
         }))
         service = PostSaleService(db=db)
