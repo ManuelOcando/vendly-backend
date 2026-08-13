@@ -72,6 +72,13 @@ class MetaWhatsAppBotService:
 
         self.fallback_chain = cart_handler
 
+        # Los dos handlers cuyo can_handle depende del estado de la conversacion
+        # y no solo del texto. Se les pregunta antes que al LLM: son los que
+        # saben que hacer con un "si" o un "no" que responde a una pregunta que
+        # el bot acaba de hacer. Se reutilizan sus predicados en vez de duplicar
+        # la condicion dentro del LLM, que se desincronizaria al primer cambio.
+        self.handlers_con_estado = (confirmation_handler, cart_confirmation_handler)
+
         # Seller chain (independent, always active)
         self.seller_chain = SellerMenuHandler(self.db)
         
@@ -145,6 +152,14 @@ class MetaWhatsAppBotService:
             # Process through appropriate chain (LLM-first architecture)
             if is_seller:
                 response = await self.seller_chain.process(message_data)
+            elif await self._la_conversacion_espera_una_respuesta(message_data):
+                # El estado manda sobre el LLM. Sin esto, un "si" a una pregunta
+                # que el bot acababa de hacer iba al modelo, que lo recibia
+                # suelto y sin anclaje: en la primera conversacion real invento
+                # un pedido de 17 hamburguesas con modificadores que se
+                # contradecian, y los productos que el cliente si habia pedido
+                # se quedaron sin recoger para siempre.
+                response = await self.fallback_chain.process(message_data)
             elif await self.llm_handler.can_handle(message_data):
                 response = await self.llm_handler.handle(message_data)
                 if response is None:  # LLM failed at runtime
@@ -232,6 +247,23 @@ class MetaWhatsAppBotService:
         except Exception as e:
             logger.error(f"Could not resolve language for tenant {tenant_id}: {e}", exc_info=True)
             return DEFAULT_LANGUAGE
+
+    async def _la_conversacion_espera_una_respuesta(self, message_data: Dict[str, Any]) -> bool:
+        """
+        Si algun handler de estado reclama este mensaje.
+
+        Es la pregunta que faltaba en el enrutado: LLMHandler.can_handle mira
+        solo el texto y nunca el estado, asi que un "si" que respondia a una
+        pregunta del propio bot acababa en el modelo en vez de en el handler
+        escrito para ese momento.
+        """
+        for handler in self.handlers_con_estado:
+            try:
+                if await handler.can_handle(message_data):
+                    return True
+            except Exception as e:
+                logger.error("Fallo consultando %s: %s", type(handler).__name__, e, exc_info=True)
+        return False
 
     async def _get_tenant_default_language(self, tenant_id: str) -> str:
         """The language the seller authored their content in."""

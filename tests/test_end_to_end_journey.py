@@ -174,6 +174,44 @@ class TestCompleteCustomerJourney:
     """Greeting -> catalog -> storefront cart -> confirmed order."""
 
     @pytest.mark.asyncio
+    async def test_ordering_by_conversation_ends_in_a_real_order(self, journey):
+        """
+        El recorrido que nunca habia funcionado: pedir hablando, sin pasar por
+        la tienda web.
+
+        Antes moria en dos sitios. El "si" que respondia a la propuesta iba al
+        LLM en vez de a ConfirmationHandler, asi que los productos pendientes no
+        llegaban al carrito; y aunque hubieran llegado, `viewing_cart` -- el
+        estado que exige el unico codigo que inserta en `orders` -- solo lo pone
+        un enlace `pedido:` de la tienda. Cuatro meses en produccion con cero
+        filas en `orders` y ni un solo error en los logs.
+        """
+        await journey.say("hola")
+
+        # ProductOrderHandler añade al carrito directamente y ya pregunta si se
+        # confirma: el flujo conversacional es de dos pasos, no de tres.
+        carrito = await journey.say("quiero una hamburguesa")
+        assert "Hamburguesa" in carrito
+        assert journey.session()["current_state"] == "ordering"
+        assert journey.session()["session_data"]["cart"], "el carrito quedo vacio"
+
+        confirmacion = await journey.say("si")          # cierra el pedido
+        pedidos = journey.fake.rows("orders")
+        assert len(pedidos) == 1, "pedir hablando no creo el pedido"
+        assert pedidos[0]["status"] == "payment_pending"
+
+        lineas = journey.fake.rows("order_items")
+        assert len(lineas) == 1
+        assert lineas[0]["item_name"] == "Hamburguesa"
+
+        # Y el cliente recibe como pagar, igual que por la tienda web.
+        assert "10.00" in confirmacion
+        assert journey.session()["current_state"] == "payment_pending"
+        assert journey.session()["session_data"]["order_id"] == pedidos[0]["id"]
+        # El carrito se vacia: un segundo "si" no debe duplicar el pedido.
+        assert not journey.session()["session_data"]["cart"]
+
+    @pytest.mark.asyncio
     async def test_full_purchase_flow_persists_state_across_turns(self, journey):
         greeting = await journey.say("hola")
         assert "menu" in greeting.lower()

@@ -143,3 +143,65 @@ class TestFallbackMessageIsGone:
 
     def test_handler_no_longer_exposes_a_fallback_message_helper(self):
         assert not hasattr(LLMHandler, "_get_fallback_message")
+
+
+class TestElEstadoMandaSobreElLLM:
+    """
+    Un "si" que responde a una pregunta del bot va al handler determinista,
+    aunque el LLM este disponible.
+
+    Esto fallo en la primera conversacion real. LLMHandler.can_handle decide
+    mirando solo el texto y nunca el estado, asi que el "si" con el que el
+    cliente confirmaba su pedido acababa en el modelo, que lo recibia suelto y
+    sin anclaje: invento un pedido de 17 hamburguesas con modificadores que se
+    contradecian ("con queso, sin queso"), piso los productos que el cliente si
+    habia pedido, y el siguiente "si" respondio "tu carrito esta vacio".
+    """
+
+    def _bot(self):
+        from services.whatsapp.meta_bot_service import MetaWhatsAppBotService
+
+        with patch("services.whatsapp.meta_bot_service.get_supabase_client", MagicMock()):
+            return MetaWhatsAppBotService()
+
+    @pytest.mark.asyncio
+    async def test_un_si_esperando_confirmacion_no_llega_al_llm(self):
+        bot = self._bot()
+        datos = _message_data()
+        datos["message"] = "si"
+        datos["session"]["session_data"] = {
+            "awaiting_confirmation": True,
+            "pending_products": [{"product_id": "p-1", "name": "Hamburguesa",
+                                  "price": 10.0, "quantity": 1}],
+        }
+
+        assert await bot._la_conversacion_espera_una_respuesta(datos) is True
+
+    @pytest.mark.asyncio
+    async def test_un_si_con_el_carrito_listo_tampoco(self):
+        bot = self._bot()
+        datos = _message_data()
+        datos["message"] = "si"
+        datos["session"]["current_state"] = "ordering"
+        datos["session"]["session_data"] = {
+            "cart": [{"product_id": "p-1", "name": "Hamburguesa", "price": 10.0, "quantity": 1}]
+        }
+
+        assert await bot._la_conversacion_espera_una_respuesta(datos) is True
+
+    @pytest.mark.asyncio
+    async def test_un_mensaje_normal_si_llega_al_llm(self):
+        """El desvio es estrecho: solo cuando hay algo que confirmar."""
+        bot = self._bot()
+        datos = _message_data()
+        datos["message"] = "quiero una hamburguesa"
+
+        assert await bot._la_conversacion_espera_una_respuesta(datos) is False
+
+    @pytest.mark.asyncio
+    async def test_un_si_sin_nada_pendiente_llega_al_llm(self):
+        bot = self._bot()
+        datos = _message_data()
+        datos["message"] = "si"
+
+        assert await bot._la_conversacion_espera_una_respuesta(datos) is False

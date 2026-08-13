@@ -1,7 +1,7 @@
 """
 Customer message handlers for WhatsApp bot
 """
-from typing import Dict, Any, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 import re
 import json
 import logging
@@ -378,6 +378,170 @@ class ConfirmationHandler(BaseWhatsAppHandler):
         
         return None  # Let next handler process
 
+def normalizar_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Una sola forma de item, vengan de donde vengan.
+
+    Habia dos carritos con claves incompatibles: el de la tienda web, que vive
+    en Redis y llama `item_id` al producto, y el de la conversacion, que vive en
+    session_data["cart"] y lo llama `product_id`. Esa diferencia es la razon de
+    que crear el pedido estuviera atado a uno solo de los dos.
+    """
+    normalizados = []
+    for item in items or []:
+        id_producto = item.get("item_id") or item.get("product_id") or item.get("id")
+        cantidad = item.get("quantity", 1) or 1
+        precio = item.get("price", 0) or 0
+        normalizados.append({
+            "id": id_producto,
+            "name": item.get("name", ""),
+            "price": precio,
+            "quantity": cantidad,
+            "subtotal": precio * cantidad,
+        })
+    return normalizados
+
+
+class PedidoCreado(NamedTuple):
+    """El identificador hace falta aparte: la sesion lo guarda para la postventa."""
+    order_id: str
+    mensaje: str
+
+
+async def crear_pedido(
+    db,
+    tenant_id: str,
+    phone: str,
+    items: List[Dict[str, Any]],
+    language: str = DEFAULT_LANGUAGE,
+) -> Optional[PedidoCreado]:
+    """
+    Crea el pedido y devuelve su id y el mensaje de confirmacion para el cliente.
+
+    Unico sitio del backend que inserta en `orders`. Antes vivia dentro de
+    CartConfirmationHandler, que exige el estado `viewing_cart`, y ese estado
+    solo lo pone CartHandler al recibir un enlace `pedido:` de la tienda web.
+    Consecuencia: pedir hablando con el bot no podia producir un pedido, por
+    construccion. Cuatro meses y cero filas en `orders` lo confirman.
+
+    Se extrajo en vez de duplicarse porque aqui dentro pasan cinco cosas
+    -- pedido, lineas, historial de compra, aviso al vendedor y datos de cobro --
+    y una copia perderia la mitad en la primera divergencia.
+
+    Devuelve None si el pedido no llego a crearse; el llamante decide que decir.
+    """
+    items = normalizar_items(items)
+    if not items:
+        return None
+
+    total = sum(item["subtotal"] for item in items)
+
+    order_data = {
+        "tenant_id": tenant_id,
+        "customer_phone": phone,
+        "total": total,
+        "subtotal": total,
+        "status": "payment_pending",
+    }
+
+    order_result = db.table("orders").insert(order_data).execute()
+    order = order_result.data[0] if order_result.data else None
+    if not order:
+        return None
+
+    # Lineas del pedido. Se registra el fallo en vez de propagarlo: la fila del
+    # pedido ya esta escrita, y reventar aqui le diria al cliente que su compra
+    # no salio cuando si salio.
+    try:
+        db.table("order_items").insert([
+            {
+                "tenant_id": tenant_id,
+                "order_id": order["id"],
+                "item_id": item["id"],
+                "item_name": item["name"],
+                "quantity": item["quantity"],
+                "unit_price": item["price"],
+                "subtotal": item["subtotal"],
+            }
+            for item in items
+        ]).execute()
+    except Exception as e:
+        logger.error("No se pudieron registrar las lineas del pedido %s: %s",
+                     order["id"], e, exc_info=True)
+
+    # Historial de compra, para recomendaciones futuras. Nunca bloquea.
+    try:
+        await CustomerProfileService(db=db).record_purchase(
+            tenant_id, phone, order["id"],
+            [{"product_id": i["id"], "quantity": i["quantity"], "amount": i["subtotal"]}
+             for i in items],
+        )
+    except Exception as e:
+        logger.error("No se pudo registrar el historial de compra de %s: %s",
+                     tenant_id, e, exc_info=True)
+
+    await _avisar_al_vendedor(db, tenant_id, phone, order, items, total)
+
+    return PedidoCreado(
+        order_id=order["id"],
+        mensaje=t(
+            "order.confirmed", language,
+            order_ref=order["id"][-8:],
+            total=f"{total:.2f}",
+            payment_instructions=_instrucciones_de_pago(db, tenant_id, total, language),
+        ),
+    )
+
+
+async def _avisar_al_vendedor(db, tenant_id, phone, order, items, total) -> None:
+    """Aviso al vendedor. Best-effort: su fallo no afecta al pedido del cliente."""
+    try:
+        config = fetch_config(
+            db, tenant_id, "seller_phone, phone_number, phone_number_id, access_token",
+        )
+        if not config:
+            logger.warning("Sin whatsapp_configs para %s, no se avisa al vendedor", tenant_id)
+            return
+
+        seller_phone = config.get("seller_phone") or config.get("phone_number")
+        if not seller_phone or seller_phone == phone:
+            logger.warning("Sin telefono de vendedor para %s, no se avisa", tenant_id)
+            return
+
+        resumen = ", ".join(f"{i['quantity']}x {i['name']}" for i in items)
+        MetaWhatsAppService(
+            phone_number_id=config["phone_number_id"],
+            access_token=config["access_token"],
+        ).send_message(
+            seller_phone,
+            f"🛒 Nuevo pedido #{order['id'][-8:]}\n"
+            f"Cliente: {phone}\n"
+            f"Total: ${total:.2f}\n"
+            f"Items: {resumen}"
+        )
+    except Exception as e:
+        logger.error("No se pudo avisar al vendedor de %s: %s", tenant_id, e, exc_info=True)
+
+
+def _instrucciones_de_pago(db, tenant_id: str, total: float, language: str) -> str:
+    """Los datos de cobro del vendedor, en el idioma del cliente."""
+    try:
+        resultado = db.table("bot_configurations").select(
+            "payment_info, payment_instructions"
+        ).eq("tenant_id", tenant_id).limit(1).execute()
+
+        if resultado.data:
+            fila = resultado.data[0]
+            return compose_payment_instructions(
+                fila.get("payment_info"), total, language,
+                legacy_text=fila.get("payment_instructions"),
+            )
+    except Exception as e:
+        logger.error("No se pudo leer bot_configurations de %s: %s", tenant_id, e, exc_info=True)
+
+    return t("order.payment_default", language)
+
+
 async def _get_cart_from_redis(cart_id: str) -> Optional[Dict[str, Any]]:
     """Retrieve a cart from Redis by cart_id. Returns None if not found or expired."""
     try:
@@ -500,167 +664,73 @@ class CartHandler(BaseWhatsAppHandler):
 
 
 class CartConfirmationHandler(BaseWhatsAppHandler):
-    """Handles cart confirmation and payment"""
-    
+    """
+    Cierra el pedido, venga el carrito de donde venga.
+
+    Dos origenes, un solo desenlace:
+
+      * Tienda web -> el cliente manda "pedido:<id>", CartHandler deja el estado
+        en `viewing_cart` y el carrito en Redis.
+      * Conversacion -> el cliente pide hablando, ConfirmationHandler mete los
+        productos en session_data["cart"] y deja el estado en `ordering`.
+
+    El segundo no tenia salida: `viewing_cart` solo lo escribe CartHandler, y
+    este handler era el unico sitio que insertaba en `orders`. Pedir hablando no
+    podia terminar en un pedido.
+    """
+
     async def can_handle(self, message_data: Dict[str, Any]) -> bool:
-        """Check if message is confirming cart"""
-        state = message_data.get("session", {}).get("current_state", "")
         message = message_data.get("message", "").lower().strip()
-        
-        return state == "viewing_cart" and matches_word_intent(message, "confirm")
-    
+        if not matches_word_intent(message, "confirm"):
+            return False
+
+        session = message_data.get("session", {}) or {}
+        state = session.get("current_state", "")
+
+        if state == "viewing_cart":
+            return True
+
+        session_data = session.get("session_data") or {}
+        return state == "ordering" and bool(session_data.get("cart"))
+
     async def handle(self, message_data: Dict[str, Any]) -> Optional[str]:
-        """Handle cart confirmation"""
         tenant_id = message_data.get("tenant_id")
         phone = message_data.get("phone")
-        session = message_data.get("session", {})
+        session = message_data.get("session", {}) or {}
         language = message_data.get("language", DEFAULT_LANGUAGE)
+        session_data = session.get("session_data") or {}
 
         try:
-            # Get cart from session
-            cart_id = session.get("session_data", {}).get("cart_id")
-            if not cart_id:
-                return t("cart.not_found", language)
+            if session.get("current_state") == "viewing_cart":
+                cart_id = session_data.get("cart_id")
+                if not cart_id:
+                    return t("cart.not_found", language)
+                cart = await _get_cart_from_redis(cart_id)
+                if not cart:
+                    return t("cart.expired_simple", language)
+                items = cart.get("items", [])
+            else:
+                items = session_data.get("cart", [])
 
-            cart = await _get_cart_from_redis(cart_id)
-            if not cart:
-                return t("cart.expired_simple", language)
-            
-            # Create order in database. `orders` has neither an `items` column
-            # nor a `source` one - the line items belong in order_items, and
-            # PostgREST rejected the whole insert over those two names, so
-            # confirming an order from WhatsApp always failed and answered with
-            # the generic error message.
-            order_data = {
-                "tenant_id": tenant_id,
-                "customer_phone": phone,
-                "total": cart["total"],
-                "subtotal": cart["total"],
-                "status": "payment_pending",
-            }
+            if not items:
+                return t("cart.empty", language)
 
-            order_result = self.db.table("orders").insert(order_data).execute()
-            order = order_result.data[0] if order_result.data else None
-
-            if not order:
+            pedido = await crear_pedido(self.db, tenant_id, phone, items, language)
+            if not pedido:
                 return t("order.process_error", language)
 
-            # Line items, in the table that has columns for them. Logged rather
-            # than raised: the order row is already committed, so failing here
-            # would tell the customer their order did not go through when it
-            # did, and the seller notification below still lists the products.
-            try:
-                self.db.table("order_items").insert([
-                    {
-                        "tenant_id": tenant_id,
-                        "order_id": order["id"],
-                        "item_id": item.get("item_id"),
-                        "item_name": item.get("name"),
-                        "quantity": item.get("quantity", 1),
-                        "unit_price": item.get("price", 0),
-                        "subtotal": (item.get("price", 0) or 0) * (item.get("quantity", 1) or 1),
-                    }
-                    for item in cart["items"]
-                ]).execute()
-            except Exception as items_err:
-                logger.error(
-                    f"Could not record order_items for order {order['id']}: {items_err}",
-                    exc_info=True,
-                )
-
-            # Record purchase history so future recommendations can be
-            # personalized for this customer. Never blocks order confirmation.
-            try:
-                purchase_items = [
-                    {
-                        "product_id": item["item_id"],
-                        "quantity": item["quantity"],
-                        "amount": item["price"] * item["quantity"],
-                    }
-                    for item in cart["items"]
-                ]
-                await CustomerProfileService(db=self.db).record_purchase(
-                    tenant_id, phone, order["id"], purchase_items
-                )
-            except Exception as history_err:
-                logger.error(
-                    f"Could not record purchase history for tenant {tenant_id}: {history_err}"
-                , exc_info=True)
-
-            # Notify seller about new order
-            try:
-                config = fetch_config(
-                    self.db, tenant_id,
-                    "seller_phone, phone_number, phone_number_id, access_token",
-                )
-
-                if config:
-                    seller_phone = config.get("seller_phone") or config.get("phone_number")
-
-                    if seller_phone and seller_phone != phone:
-                        items_summary = ", ".join(
-                            f"{item['quantity']}x {item['name']}" for item in cart["items"]
-                        )
-                        notification = (
-                            f"🛒 Nuevo pedido #{order['id'][-8:]}\n"
-                            f"Cliente: {phone}\n"
-                            f"Total: ${cart['total']:.2f}\n"
-                            f"Items: {items_summary}"
-                        )
-                        MetaWhatsAppService(
-                            phone_number_id=config["phone_number_id"],
-                            access_token=config["access_token"]
-                        ).send_message(seller_phone, notification)
-                    else:
-                        logger.warning(
-                            f"No seller phone configured for tenant {tenant_id}, skipping notification"
-                        )
-                else:
-                    logger.warning(
-                        f"No whatsapp_configs found for tenant {tenant_id}, skipping seller notification"
-                    )
-            except Exception as notify_err:
-                logger.error(f"Could not notify seller for tenant {tenant_id}: {notify_err}", exc_info=True)
-
-            # Send payment instructions
-            # Los datos de cobro del vendedor, en el idioma del cliente. Se
-            # componen aqui y no al guardarlos justamente por eso: un texto
-            # montado al guardar quedaria clavado en el idioma del vendedor.
-            payment_instructions = t("order.payment_default", language)
-            try:
-                bot_config_result = self.db.table("bot_configurations").select(
-                    "payment_info, payment_instructions"
-                ).eq("tenant_id", tenant_id).limit(1).execute()
-
-                if bot_config_result.data:
-                    fila = bot_config_result.data[0]
-                    payment_instructions = compose_payment_instructions(
-                        fila.get("payment_info"),
-                        cart["total"],
-                        language,
-                        legacy_text=fila.get("payment_instructions"),
-                    )
-            except Exception as config_err:
-                logger.error(f"Could not fetch bot_configurations for tenant {tenant_id}: {config_err}", exc_info=True)
-            
-            payment_message = t(
-                "order.confirmed", language,
-                order_ref=order["id"][-8:],
-                total=f"{cart['total']:.2f}",
-                payment_instructions=payment_instructions,
-            )
-            
-            # Update session state
+            # El carrito ya es un pedido: vaciarlo evita que un segundo "si"
+            # cree el mismo pedido otra vez. El order_id se guarda porque la
+            # postventa lo busca ahi.
             session_id = session.get("id")
             if session_id:
                 await self.update_session_state(
-                    session_id, 
-                    "payment_pending", 
-                    {"order_id": order["id"]}
+                    session_id, "payment_pending",
+                    {"order_id": pedido.order_id, "cart": [], "cart_id": None, "total": 0},
                 )
-            
-            return payment_message
-            
+
+            return pedido.mensaje
+
         except Exception as e:
-            logger.error(f"Error confirming order: {e}")
+            logger.error(f"Error confirming order: {e}", exc_info=True)
             return t("order.process_error", language)

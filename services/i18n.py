@@ -338,10 +338,15 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         "en": "⚠️ I couldn't find:",
         "pt": "⚠️ Não encontrei:",
     },
+    # Una sola pregunta, no dos. Antes decia "¿Deseas agregar otro producto o
+    # confirmar el pedido?", y un "si" a eso no significa nada: "si" cuenta como
+    # confirmar, asi que la respuesta mas natural del cliente cerraba un pedido
+    # que quiza solo queria ampliar. Quien quiera mas cosas las pide, y eso ya se
+    # maneja como producto nuevo.
     "cart.summary": {
-        "es": "{added}\n\n🛒 *Tu carrito:*\n{items}\n\n💰 *Total:* ${total}{errors}\n\n¿Deseas agregar otro producto o confirmar el pedido?",
-        "en": "{added}\n\n🛒 *Your cart:*\n{items}\n\n💰 *Total:* ${total}{errors}\n\nWould you like to add another product or confirm the order?",
-        "pt": "{added}\n\n🛒 *Seu carrinho:*\n{items}\n\n💰 *Total:* ${total}{errors}\n\nDeseja adicionar outro produto ou confirmar o pedido?",
+        "es": "{added}\n\n🛒 *Tu carrito:*\n{items}\n\n💰 *Total:* ${total}{errors}\n\n¿Confirmas el pedido? Si quieres algo más, dime qué te agrego.",
+        "en": "{added}\n\n🛒 *Your cart:*\n{items}\n\n💰 *Total:* ${total}{errors}\n\nShall I confirm the order? If you want anything else, just tell me.",
+        "pt": "{added}\n\n🛒 *Seu carrinho:*\n{items}\n\n💰 *Total:* ${total}{errors}\n\nConfirma o pedido? Se quiser mais alguma coisa, é só dizer.",
     },
     "cart.expired": {
         "es": "El carrito ha expirado. Por favor, crea uno nuevo desde la tienda.",
