@@ -23,6 +23,28 @@ os.environ.setdefault(
 
 
 @pytest.fixture(autouse=True)
+def _cliente_supabase_sin_cachear():
+    """
+    Vacia la cache de get_supabase_client entre tests.
+
+    El cliente se cachea en produccion porque construir uno cuesta ~415 ms. Los
+    tests, en cambio, parchean `db.supabase.create_client` -- el seam esta por
+    debajo de la cache, asi que sin esto el primer cliente construido se queda
+    congelado y los tests siguientes heredan la base falsa de otro. Se veia como
+    un saludo respondiendo "tienes un pedido pendiente" en un test que nunca
+    pidio nada.
+
+    Autouse y no en la fixture de cada suite porque la fuga la sufre cualquier
+    test que toque la base, no solo los que la parchean.
+    """
+    from db.supabase import get_supabase_client
+
+    get_supabase_client.cache_clear()
+    yield
+    get_supabase_client.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _health_dependency_cache_limpia():
     """
     Vacia el cache de dependencias de /health entre tests.

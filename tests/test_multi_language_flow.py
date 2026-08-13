@@ -112,7 +112,12 @@ class TestLanguageDetection:
         with patch("services.whatsapp.meta_bot_service.tenant_has_feature", AsyncMock(return_value=True)):
             await service.process_message("tenant-1", "+1", "hello there", "phone-id")
 
-        service._persist_session_language.assert_awaited_once_with("session-1", "en")
+        # Recibe la sesion entera, no su id: process_message acaba de traerla y
+        # releerla para persistir el idioma era un SELECT de mas por mensaje.
+        service._persist_session_language.assert_awaited_once()
+        sesion, idioma = service._persist_session_language.await_args.args
+        assert sesion["id"] == "session-1"
+        assert idioma == "en"
 
 
 class TestTierGating:

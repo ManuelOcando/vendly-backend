@@ -106,7 +106,7 @@ class MetaWhatsAppBotService:
             )
             
             # Check if user is seller
-            is_seller = await self._is_seller(tenant_id, phone)
+            is_seller = await self._is_seller(config, phone)
 
             is_onboarding = tenant.get("onboarding_status") in (None, "not_started", "in_progress")
 
@@ -226,7 +226,7 @@ class MetaWhatsAppBotService:
                 language = await self._get_tenant_default_language(tenant_id)
 
             if language != stored:
-                await self._persist_session_language(session.get("id"), language)
+                await self._persist_session_language(session, language)
 
             return language
         except Exception as e:
@@ -245,16 +245,24 @@ class MetaWhatsAppBotService:
             logger.error(f"Could not read default_language for tenant {tenant_id}: {e}", exc_info=True)
         return DEFAULT_LANGUAGE
 
-    async def _persist_session_language(self, session_id: Optional[str], language: str) -> None:
-        """Store the conversation's language, preserving the rest of session_data."""
+    async def _persist_session_language(self, session: Dict[str, Any], language: str) -> None:
+        """Store the conversation's language, preserving the rest of session_data.
+
+        Recibe la sesion, no su id. Antes volvia a leer session_data de la base
+        para no pisar el resto del diccionario -- pero quien llama acaba de
+        traerla entera, asi que era un SELECT por cada mensaje en el que cambia
+        el idioma, para releer algo que ya estaba en memoria.
+        """
+        session_id = session.get("id")
         if not session_id:
             return
         try:
-            result = self.db.table("conversation_sessions").select(
-                "session_data"
-            ).eq("id", session_id).limit(1).execute()
-            session_data = (result.data[0].get("session_data") or {}) if result.data else {}
+            session_data = session.get("session_data") or {}
             session_data["language"] = language
+            # Se actualiza tambien en memoria: los handlers reciben esta misma
+            # sesion mas abajo y deben ver el idioma ya resuelto.
+            session["session_data"] = session_data
+
             self.db.table("conversation_sessions").update({
                 "session_data": session_data
             }).eq("id", session_id).execute()
@@ -354,11 +362,15 @@ class MetaWhatsAppBotService:
             logger.error(f"Error managing session: {e}")
             return {}
     
-    async def _is_seller(self, tenant_id: str, phone: str) -> bool:
+    async def _is_seller(self, config: Dict[str, Any], phone: str) -> bool:
         """Check if phone number belongs to the seller (business owner) of the tenant.
 
+        Recibe la config ya leida en vez de volver a consultarla: process_message
+        la trae unas lineas antes por _get_tenant_config, y esto disparaba un
+        segundo SELECT identico sobre whatsapp_configs en cada mensaje.
+
         Logic:
-        - Queries whatsapp_configs for the tenant.
+        - Uses the tenant's whatsapp_configs row.
         - If the record has a non-empty `seller_phone` field, compares `phone` against it.
           This is the preferred approach: `seller_phone` is the personal phone of the
           business owner, distinct from `phone_number` (the WhatsApp Business number / bot number).
@@ -370,8 +382,6 @@ class MetaWhatsAppBotService:
         phone in all deployments.
         """
         try:
-            config = fetch_config(self.db, tenant_id)
-
             if not config:
                 return False
 
