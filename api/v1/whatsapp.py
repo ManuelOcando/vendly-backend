@@ -40,8 +40,39 @@ class MessageBuffer:
     last_updated: datetime = field(default_factory=datetime.utcnow)
 
 _message_buffers: Dict[str, MessageBuffer] = {}  # key: "{tenant_id}:{phone}" -> MessageBuffer
-BUFFER_TIMEOUT_SECONDS = 10  # Wait 10 seconds for additional messages
+# Cuanto se espera por si el cliente sigue escribiendo.
+#
+# Eran 10 segundos fijos para todo mensaje, y se notaban: en la primera
+# conversacion real cada respuesta llegaba un minuto despues de la anterior. El
+# buffer existe para juntar a quien parte una idea en trozos -- "quiero" /
+# "una hamburguesa" / "con queso" -- no para castigar a quien escribe de una vez.
+ESPERA_ENTRE_FRAGMENTOS = 2.0
 BUFFER_MAX_SIZE = 10  # Maximum messages to accumulate
+
+# Un mensaje asi de largo ya es una idea completa; esperar mas no junta nada.
+LARGO_MENSAJE_COMPLETO = 25
+_FINALES_DE_FRASE = (".", "!", "?", "…", "‽")
+
+
+def espera_para(texto: str) -> float:
+    """
+    Segundos que conviene esperar tras este mensaje antes de contestar.
+
+    Cero cuando se ve terminado -- termina en signo de puntuacion, o es
+    suficientemente largo --, porque ahi la espera no agrupa nada y solo retrasa
+    la respuesta. Dos segundos cuando es un fragmento corto y suelto, que es
+    justo el caso para el que se invento el buffer.
+
+    Funcion pura para poder probar el criterio sin relojes ni tareas.
+    """
+    limpio = (texto or "").strip()
+    if not limpio:
+        return ESPERA_ENTRE_FRAGMENTOS
+    if limpio.endswith(_FINALES_DE_FRASE):
+        return 0.0
+    if len(limpio) >= LARGO_MENSAJE_COMPLETO:
+        return 0.0
+    return ESPERA_ENTRE_FRAGMENTOS
 
 
 def combine_messages(messages: List[str]) -> str:
@@ -522,16 +553,24 @@ async def process_meta_message(tenant_id: str, phone: str, text: str, phone_id: 
             )
             logger.info("🆕 Created new buffer for %s", tel(phone))
         
-        # Start new timer to process after delay
+        espera = espera_para(text)
+
+        if espera <= 0:
+            # El mensaje se ve terminado: esperar no agruparia nada y el cliente
+            # se queda mirando la pantalla.
+            logger.info("▶️ Mensaje completo, se procesa ya para %s", tel(phone))
+            await _process_buffered_messages(tenant_id, phone, phone_id)
+            return
+
         async def delayed_process():
-            await asyncio.sleep(BUFFER_TIMEOUT_SECONDS)
+            await asyncio.sleep(espera)
             logger.info("⏰ Timer expired for %s, processing buffered messages...", tel(phone))
             await _process_buffered_messages(tenant_id, phone, phone_id)
-        
+
         # Store the timer task
         _message_buffers[buffer_key].timer = asyncio.create_task(delayed_process())
-        
-        logger.info(f"⏳ Timer started: {BUFFER_TIMEOUT_SECONDS}s wait for more messages...")
+
+        logger.info("⏳ Esperando %.1fs por si llega otro fragmento...", espera)
             
     except Exception as e:
         logger.error(f"ERROR in process_meta_message: {e}")
