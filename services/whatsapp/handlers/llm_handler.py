@@ -49,6 +49,56 @@ def _linea_de_producto(producto: Dict[str, Any]) -> str:
     return f"• {producto.get('name', '')}{detalle} x{cantidad} - ${subtotal:.2f}"
 
 
+# Como empieza una modificacion en los tres idiomas. Un "producto" que empieza
+# asi no es un producto: es lo que hay que hacerle al anterior.
+_INICIOS_DE_MODIFICACION = (
+    "sin ", "con ", "extra ", "sem ", "com ",
+    "without ", "with ", "no ", "add ", "hold the ",
+)
+
+
+def parece_modificacion(nombre: str) -> bool:
+    """Si este 'producto' es en realidad una modificacion del anterior."""
+    limpio = (nombre or "").strip().lower()
+    return limpio.startswith(_INICIOS_DE_MODIFICACION)
+
+
+def reasignar_modificaciones(
+    products: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Devuelve las modificaciones que el modelo mando como productos sueltos.
+
+    Ante "otra hamburguesa sin lechuga y sin tomate" el modelo a veces devuelve
+    dos entradas -- {"name": "hamburguesa", ...} y {"name": "sin tomate"} -- y
+    la segunda no existe en ningun catalogo. El cliente veia
+    'No encontre "sin tomate"' y, peor, se quedaba sin la modificacion: pedia
+    una hamburguesa sin tomate y le llegaba con tomate.
+
+    Se arregla aqui y no en el prompt porque el prompt no da garantias: por bien
+    redactado que este, el modelo volvera a partirlo alguna vez. Esto lo recoge
+    siempre.
+
+    Una modificacion que llega primera, sin producto al que pegarse, se deja
+    como estaba y acaba en el "no encontre" de siempre. Es deliberado: pasa
+    cuando el cliente se refiere a algo que ya esta en el carrito ("ponte sin
+    tomate"), y descartarla en silencio haria que el bot contestara con un visto
+    bueno y el carrito sin tocar. El cliente creeria que se aplico y recibiria
+    el tomate igual. Que se le diga que no se entendio es peor conversacion y
+    mejor pedido.
+    """
+    resultado = []
+    for producto in products or []:
+        nombre = producto.get("name", "")
+        if parece_modificacion(nombre) and resultado:
+            anterior = resultado[-1]
+            anterior["modifications"] = list(anterior.get("modifications") or [])
+            anterior["modifications"].append(nombre.strip())
+        else:
+            resultado.append(dict(producto))
+    return resultado
+
+
 def fusionar_pendientes(
     anteriores: Optional[List[Dict[str, Any]]],
     nuevos: List[Dict[str, Any]],
@@ -379,6 +429,11 @@ class LLMHandler(BaseWhatsAppHandler):
         if not products:
             return response_text or t("llm.specify_product", language)
         
+        # Mismo rescate que en la rama de añadir al carrito: el modelo elige
+        # entre las dos segun le parece, y parte "hamburguesa sin tomate" en dos
+        # productos en cualquiera de ellas.
+        products = reasignar_modificaciones(products)
+
         # Match all products in database
         nuevos = []
 
@@ -434,9 +489,26 @@ class LLMHandler(BaseWhatsAppHandler):
         """Add products to cart directly (no confirmation needed)"""
         added_products = []
         errors = []
-        
-        cart = current_cart.copy() if current_cart else []
-        
+
+        cart = [dict(item) for item in (current_cart or [])]
+
+        # Lo que estaba esperando confirmacion pasa al carrito antes de añadir
+        # nada. Sin esto se quedaba huerfano: el LLM elige entre esta rama y la
+        # de confirmar segun le parece, y no comparten estado, asi que un
+        # cliente con cuatro productos pendientes por $40 pedia uno mas y el
+        # pedido se quedaba en ese uno. Nada se da por aceptado a la ligera --
+        # al final se sigue preguntando "¿Confirmas el pedido?".
+        session_data = session.get("session_data", {}) or {}
+        pendientes = session_data.get("pending_products") or []
+        if pendientes:
+            cart = fusionar_pendientes(cart, pendientes)
+
+        # El modelo a veces parte "otra hamburguesa sin lechuga y sin tomate" en
+        # dos productos, y el segundo -- "sin tomate" -- no existe en el
+        # catalogo: el cliente veia 'No encontre "sin tomate"' y perdia la
+        # modificacion.
+        products = reasignar_modificaciones(products)
+
         for product_data in products:
             # Find product in database
             matched_product = await self._find_product_in_db(
@@ -478,18 +550,18 @@ class LLMHandler(BaseWhatsAppHandler):
         # Update session
         session_id = session.get("id")
         if session_id:
-            session_data = session.get("session_data", {}) or {}
             session_data["cart"] = cart
             session_data["total"] = total
+            # Ya estan en el carrito: dejarlos pendientes los duplicaria en
+            # cuanto el cliente respondiera "si".
+            session_data["pending_products"] = None
+            session_data["awaiting_confirmation"] = False
             await self.update_session_state(session_id, "ordering", session_data)
-        
+
         # Build response
         added_text = "\n".join([f"✅ {name}" for name in added_products])
-        
-        cart_text = "\n".join([
-            f"• {item['name']} x{item['quantity']} - ${item['price'] * item['quantity']:.2f}"
-            for item in cart
-        ])
+
+        cart_text = "\n".join(_linea_de_producto(item) for item in cart)
         
         error_text = ""
         if errors:
