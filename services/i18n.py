@@ -475,10 +475,23 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         "en": "I couldn't find those products. Could you check the names?",
         "pt": "Não encontrei os produtos. Poderia verificar os nomes?",
     },
-    "llm.remove_not_implemented": {
-        "es": "Función de remover productos en desarrollo.",
-        "en": "Removing products isn't available yet.",
-        "pt": "A função de remover produtos está em desenvolvimento.",
+    # Quitar del carrito. Antes habia una sola clave aqui,
+    # "llm.remove_not_implemented", que le contaba al cliente que la funcion
+    # estaba en desarrollo: su unica salida era cancelar el pedido entero.
+    "cart.removed": {
+        "es": "✅ Quité {name}.\n\n🛒 *Tu carrito:*\n{items}\n\n💰 *Total:* ${total}\n\n¿Confirmas el pedido? Si quieres algo más, dime qué te agrego.",
+        "en": "✅ Removed {name}.\n\n🛒 *Your cart:*\n{items}\n\n💰 *Total:* ${total}\n\nShall I confirm the order? If you want anything else, just tell me.",
+        "pt": "✅ Removi {name}.\n\n🛒 *Seu carrinho:*\n{items}\n\n💰 *Total:* ${total}\n\nConfirma o pedido? Se quiser mais alguma coisa, é só dizer.",
+    },
+    "cart.removed_now_empty": {
+        "es": "✅ Quité {name}. Tu carrito quedó vacío. Dime qué quieres pedir.",
+        "en": "✅ Removed {name}. Your cart is now empty. Tell me what you'd like.",
+        "pt": "✅ Removi {name}. Seu carrinho ficou vazio. Diga o que deseja pedir.",
+    },
+    "cart.remove_not_found": {
+        "es": "No encontré {name} en tu carrito. Escribe *carrito* para ver lo que llevas.",
+        "en": "I couldn't find {name} in your cart. Type *cart* to see what you have.",
+        "pt": "Não encontrei {name} no seu carrinho. Escreva *carrinho* para ver o que tem.",
     },
     "llm.what_to_modify": {
         "es": "¿Qué producto quieres modificar?",

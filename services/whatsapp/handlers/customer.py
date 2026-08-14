@@ -11,6 +11,7 @@ from .base import BaseWhatsAppHandler
 from db.redis import get_redis_client
 from db.whatsapp_config import fetch_config
 from services.payment_instructions import compose as compose_payment_instructions
+from services.whatsapp import estado_pedido
 from services.whatsapp.meta_service import MetaWhatsAppService
 from services.customer_profile import CustomerProfileService
 from services.recommendation_engine import RecommendationEngine
@@ -384,93 +385,49 @@ class ConfirmationHandler(BaseWhatsAppHandler):
         session = message_data.get("session", {})
         language = message_data.get("language", DEFAULT_LANGUAGE)
 
-        session_data = session.get("session_data", {}) or {}
-        current_cart = session_data.get("cart", [])
-        
-        # Support both single product (backward compat) and multiple products
-        pending_products = session_data.get("pending_products")
-        if not pending_products:
-            # Try old format (backward compatibility)
-            single_product = session_data.get("pending_product")
-            if single_product:
-                pending_products = [single_product]
-            else:
-                return t("confirmation.no_pending", language)
-        
-        # Ensure it's a list
-        if not isinstance(pending_products, list):
-            pending_products = [pending_products]
-        
-        # Check if confirmed or rejected
+        estado = estado_pedido.leer(session.get("session_data"))
+
+        if not estado.pendientes:
+            return t("confirmation.no_pending", language)
+
         is_confirmed = matches_word_intent(message, "confirm")
         is_rejected = matches_word_intent(message, "reject")
-        
         session_id = session.get("id")
-        
+
         if is_confirmed:
-            # Add all pending products to cart
-            added_products_text = []
-            
-            for pending_product in pending_products:
-                product_id = pending_product.get("product_id")
-                existing = next((item for item in current_cart if item["product_id"] == product_id), None)
-                
-                if existing:
-                    existing["quantity"] += pending_product.get("quantity", 1)
-                    if pending_product.get("modifications"):
-                        existing.setdefault("modifications", []).extend(pending_product["modifications"])
-                else:
-                    cart_item = {
-                        "product_id": product_id,
-                        "name": pending_product["name"],
-                        "price": pending_product["price"],
-                        "quantity": pending_product.get("quantity", 1),
-                        "modifications": pending_product.get("modifications", [])
-                    }
-                    current_cart.append(cart_item)
-                
-                # Build added product text
-                modifications = pending_product.get("modifications", [])
-                mod_text = ""
-                if modifications:
-                    mod_text = f" ({', '.join(modifications)})"
-                
-                added_products_text.append(f"✅ {pending_product['name']}{mod_text} x{pending_product.get('quantity', 1)}")
-            
-            # Clear pending products and update state
-            session_data["pending_products"] = None
-            session_data["pending_product"] = None  # Clear both formats
-            session_data["awaiting_confirmation"] = False
-            session_data["cart"] = current_cart
-            
-            total = sum(item["price"] * item["quantity"] for item in current_cart)
-            session_data["total"] = total
-            
+            # Lo que se acaba de aceptar, para decirselo al cliente.
+            aceptadas = estado.pendientes
+            estado = estado_pedido.confirmar(estado)
+
             if session_id:
-                await self.update_session_state(session_id, "ordering", session_data)
-            
-            # Build cart summary
-            cart_text = "\n".join(linea_de_carrito(item) for item in current_cart)
-            
-            added_text = "\n".join(added_products_text)
-            
+                await self.update_session_state(
+                    session_id, "ordering", estado_pedido.a_session_data(estado)
+                )
+
+            added_text = "\n".join(
+                f"✅ {l.nombre}"
+                + (f" ({', '.join(l.modificaciones)})" if l.modificaciones else "")
+                + f" x{l.cantidad}"
+                for l in aceptadas
+            )
+            cart_text = "\n".join(estado_pedido.linea_texto(l) for l in estado.carrito)
+
             return t(
                 "cart.summary", language,
                 added=added_text, items=cart_text,
-                total=f"{total:.2f}", errors="",
+                total=f"{estado.total:.2f}", errors="",
             )
-        
+
         elif is_rejected:
-            # Clear pending products (both formats)
-            session_data["pending_products"] = None
-            session_data["pending_product"] = None
-            session_data["awaiting_confirmation"] = False
-            
+            estado = estado_pedido.descartar(estado)
+
             if session_id:
-                await self.update_session_state(session_id, "ordering", session_data)
-            
+                await self.update_session_state(
+                    session_id, "ordering", estado_pedido.a_session_data(estado)
+                )
+
             return t("confirmation.discarded", language)
-        
+
         return None  # Let next handler process
 
 def normalizar_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

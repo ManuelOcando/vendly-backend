@@ -11,6 +11,7 @@ from .base import BaseWhatsAppHandler
 from services.bot_personalities import resolve_personality
 from services.llm import get_llm_provider, LLMProvider
 from services.i18n import DEFAULT_LANGUAGE, matches_intent, t
+from services.whatsapp import estado_pedido
 from config import get_settings
 from utils.log_privacy import preview, tel
 
@@ -452,24 +453,22 @@ class LLMHandler(BaseWhatsAppHandler):
         if not nuevos:
             return t("llm.products_not_found", language)
 
-        # Se acumulan sobre lo que ya estaba pendiente, no lo reemplazan. Antes
-        # era una asignacion directa, asi que un cliente que decia "ponme otra
-        # hamburguesa" mientras tenia cinco productos sin confirmar perdia los
-        # cinco: el pedido pasaba de $50 a $10 sin avisar, y confirmaba eso.
-        session_data = session.get("session_data", {}) or {}
-        pending_products = fusionar_pendientes(
-            session_data.get("pending_products"), nuevos
+        # proponer() acumula sobre lo que ya estaba pendiente. Era una
+        # asignacion, asi que un cliente con cinco productos sin confirmar que
+        # decia "ponme otra hamburguesa" perdia los cinco: el pedido pasaba de
+        # $50 a $10 sin avisar, y eso confirmaba.
+        estado = estado_pedido.proponer(
+            estado_pedido.leer(session.get("session_data")), nuevos
         )
 
-        session_data["pending_products"] = pending_products
-        session_data["awaiting_confirmation"] = True
-
-        await self.update_session_state(session_id, "awaiting_confirmation", session_data)
+        await self.update_session_state(
+            session_id, "awaiting_confirmation", estado_pedido.a_session_data(estado)
+        )
 
         # El mensaje enseña el pedido entero, no solo lo ultimo añadido: es lo
         # que el cliente esta a punto de confirmar.
-        total = sum(p["price"] * p["quantity"] for p in pending_products)
-        products_text = "\n".join(_linea_de_producto(p) for p in pending_products)
+        total = estado.total_pendiente
+        products_text = "\n".join(estado_pedido.linea_texto(l) for l in estado.pendientes)
         
         return t(
             "order.confirm_products", language,
@@ -490,18 +489,8 @@ class LLMHandler(BaseWhatsAppHandler):
         added_products = []
         errors = []
 
-        cart = [dict(item) for item in (current_cart or [])]
-
-        # Lo que estaba esperando confirmacion pasa al carrito antes de añadir
-        # nada. Sin esto se quedaba huerfano: el LLM elige entre esta rama y la
-        # de confirmar segun le parece, y no comparten estado, asi que un
-        # cliente con cuatro productos pendientes por $40 pedia uno mas y el
-        # pedido se quedaba en ese uno. Nada se da por aceptado a la ligera --
-        # al final se sigue preguntando "¿Confirmas el pedido?".
-        session_data = session.get("session_data", {}) or {}
-        pendientes = session_data.get("pending_products") or []
-        if pendientes:
-            cart = fusionar_pendientes(cart, pendientes)
+        # current_cart no se usa: el estado se lee de la sesion, que es la unica
+        # fuente. Se recibe todavia porque lo pasan los llamantes.
 
         # El modelo a veces parte "otra hamburguesa sin lechuga y sin tomate" en
         # dos productos, y el segundo -- "sin tomate" -- no existe en el
@@ -509,59 +498,42 @@ class LLMHandler(BaseWhatsAppHandler):
         # modificacion.
         products = reasignar_modificaciones(products)
 
+        nuevas = []
         for product_data in products:
-            # Find product in database
             matched_product = await self._find_product_in_db(
-                tenant_id, 
-                product_data.get("name", "")
+                tenant_id, product_data.get("name", "")
             )
-            
             if matched_product:
-                # Check if already in cart
-                existing = next(
-                    (item for item in cart if item["product_id"] == matched_product["id"]),
-                    None
-                )
-                
-                quantity = product_data.get("quantity", 1)
-                modifications = product_data.get("modifications", [])
-                
-                if existing:
-                    existing["quantity"] += quantity
-                    if modifications:
-                        existing.setdefault("modifications", []).extend(modifications)
-                    added_products.append(f"{matched_product['name']} x{existing['quantity']}")
-                else:
-                    cart_item = {
-                        "product_id": matched_product["id"],
-                        "name": matched_product["name"],
-                        "price": matched_product["price"],
-                        "quantity": quantity,
-                        "modifications": modifications
-                    }
-                    cart.append(cart_item)
-                    added_products.append(matched_product['name'])
+                nuevas.append({
+                    "product_id": matched_product["id"],
+                    "name": matched_product["name"],
+                    "price": matched_product["price"],
+                    "quantity": product_data.get("quantity", 1),
+                    "modifications": product_data.get("modifications", []),
+                })
+                added_products.append(matched_product["name"])
             else:
                 errors.append(product_data.get("name", t("llm.unknown_product", language)))
-        
-        # Calculate total
-        total = sum(item["price"] * item["quantity"] for item in cart)
-        
-        # Update session
+
+        # añadir() vuelca al carrito lo que estuviera pendiente antes de meter lo
+        # nuevo. Sin eso se quedaba huerfano: esta rama y la de proponer no
+        # compartian estado, y el modelo elige entre ellas.
+        estado = estado_pedido.añadir(
+            estado_pedido.leer(session.get("session_data")), nuevas
+        )
+        cart = estado.carrito
+        total = estado.total
+
         session_id = session.get("id")
         if session_id:
-            session_data["cart"] = cart
-            session_data["total"] = total
-            # Ya estan en el carrito: dejarlos pendientes los duplicaria en
-            # cuanto el cliente respondiera "si".
-            session_data["pending_products"] = None
-            session_data["awaiting_confirmation"] = False
-            await self.update_session_state(session_id, "ordering", session_data)
+            await self.update_session_state(
+                session_id, "ordering", estado_pedido.a_session_data(estado)
+            )
 
         # Build response
         added_text = "\n".join([f"✅ {name}" for name in added_products])
 
-        cart_text = "\n".join(_linea_de_producto(item) for item in cart)
+        cart_text = "\n".join(estado_pedido.linea_texto(item) for item in cart)
         
         error_text = ""
         if errors:
@@ -608,9 +580,52 @@ class LLMHandler(BaseWhatsAppHandler):
         current_cart: List[Dict[str, Any]],
         language: str = DEFAULT_LANGUAGE
     ) -> str:
-        """Remove products from cart"""
-        # TODO: Implement removal logic
-        return response_text or t("llm.remove_not_implemented", language)
+        """
+        Quita productos del carrito.
+
+        Era un TODO que respondia "Funcion de remover productos en desarrollo".
+        Un cliente que se equivocaba solo podia cancelar y empezar de cero, y
+        corregir el pedido es lo que mas hace la gente pidiendo comida.
+
+        Ahora es cablear estado_pedido.quitar(), no inventar nada.
+        """
+        estado = estado_pedido.leer(session.get("session_data"))
+
+        if not estado.carrito:
+            return t("cart.empty", language)
+
+        quitadas_todas = []
+        no_encontrados = []
+
+        for product_data in products or []:
+            nombre = product_data.get("name", "")
+            estado, quitadas = estado_pedido.quitar(estado, nombre)
+            if quitadas:
+                quitadas_todas.extend(quitadas)
+            elif nombre:
+                no_encontrados.append(nombre)
+
+        if not quitadas_todas:
+            return t("cart.remove_not_found", language,
+                     name=", ".join(no_encontrados) or "eso")
+
+        session_id = session.get("id")
+        if session_id:
+            await self.update_session_state(
+                session_id, "ordering", estado_pedido.a_session_data(estado)
+            )
+
+        quitado_texto = ", ".join(l.nombre for l in quitadas_todas)
+
+        if not estado.carrito:
+            return t("cart.removed_now_empty", language, name=quitado_texto)
+
+        return t(
+            "cart.removed", language,
+            name=quitado_texto,
+            items="\n".join(estado_pedido.linea_texto(l) for l in estado.carrito),
+            total=f"{estado.total:.2f}",
+        )
     
     async def _handle_confirm_order(
         self,
@@ -644,19 +659,17 @@ class LLMHandler(BaseWhatsAppHandler):
         session_id = session.get("id")
         
         if session_id:
-            # Clear cart and reset state
-            session_data = session.get("session_data", {}) or {}
-            session_data["cart"] = []
-            session_data["total"] = 0
-            # Las dos claves. Solo se limpiaba pending_product, la antigua en
-            # singular, y pending_products -- la que se usa -- sobrevivia a la
-            # cancelacion. Con _handle_add_to_cart volcando lo pendiente al
-            # carrito, eso resucitaba el pedido cancelado en cuanto el cliente
-            # pedia cualquier otra cosa.
-            session_data["pending_product"] = None
-            session_data["pending_products"] = None
-            session_data["awaiting_confirmation"] = False
-            await self.update_session_state(session_id, "initial", session_data)
+            # vaciar() se lleva carrito y pendientes. Antes se limpiaba solo
+            # pending_product, la clave antigua en singular, y el pedido
+            # cancelado volvia en cuanto el cliente pedia otra cosa.
+            await self.update_session_state(
+                session_id, "initial",
+                estado_pedido.a_session_data(
+                    estado_pedido.vaciar(
+                        estado_pedido.leer(session.get("session_data"))
+                    )
+                ),
+            )
         
         return response_text or t("order.cancelled", language)
     
