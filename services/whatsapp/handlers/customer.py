@@ -102,6 +102,20 @@ def _acotar(cantidad: int) -> int:
     return max(1, min(cantidad, CANTIDAD_MAXIMA))
 
 
+def linea_de_carrito(item: Dict[str, Any]) -> str:
+    """
+    Una linea del carrito, con lo que el cliente pidio cambiar.
+
+    Se omitian: el resumen decia "hamburguesa x1" cuando el cliente habia pedido
+    una hamburguesa sin cebolla, y eso es lo que confirmaba sin poder revisarlo.
+    """
+    modificaciones = item.get("modifications") or []
+    detalle = f" ({', '.join(modificaciones)})" if modificaciones else ""
+    cantidad = item.get("quantity", 1)
+    return (f"• {item.get('name', '')}{detalle} x{cantidad}"
+            f" - ${item.get('price', 0) * cantidad:.2f}")
+
+
 class WelcomeHandler(BaseWhatsAppHandler):
     """Handles welcome messages and greetings"""
     
@@ -317,10 +331,7 @@ class ProductOrderHandler(BaseWhatsAppHandler):
             # Build response
             added_text = "\n".join([f"✅ {name}" for name in added_products])
             
-            cart_text = "\n".join([
-                f"• {item['name']} x{item['quantity']} - ${item['price'] * item['quantity']:.2f}"
-                for item in cart
-            ])
+            cart_text = "\n".join(linea_de_carrito(item) for item in cart)
             
             error_text = ""
             if errors:
@@ -439,10 +450,7 @@ class ConfirmationHandler(BaseWhatsAppHandler):
                 await self.update_session_state(session_id, "ordering", session_data)
             
             # Build cart summary
-            cart_text = "\n".join([
-                f"• {item['name']} x{item['quantity']} - ${item['price'] * item['quantity']:.2f}"
-                for item in current_cart
-            ])
+            cart_text = "\n".join(linea_de_carrito(item) for item in current_cart)
             
             added_text = "\n".join(added_products_text)
             
@@ -485,6 +493,9 @@ def normalizar_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "price": precio,
             "quantity": cantidad,
             "subtotal": precio * cantidad,
+            # Lo que el cliente pidio cambiar. Se arrastra hasta el pedido y
+            # hasta el aviso al vendedor: es lo que la cocina necesita saber.
+            "modifications": list(item.get("modifications") or []),
         })
     return normalizados
 
@@ -549,6 +560,7 @@ async def crear_pedido(
                 "quantity": item["quantity"],
                 "unit_price": item["price"],
                 "subtotal": item["subtotal"],
+                "modifications": item["modifications"],
             }
             for item in items
         ]).execute()
@@ -595,7 +607,14 @@ async def _avisar_al_vendedor(db, tenant_id, phone, order, items, total) -> None
             logger.warning("Sin telefono de vendedor para %s, no se avisa", tenant_id)
             return
 
-        resumen = ", ".join(f"{i['quantity']}x {i['name']}" for i in items)
+        # Con las modificaciones: "2x hamburguesa (sin cebolla)". El vendedor
+        # lee esto y prepara el pedido, asi que omitirlas era mandarle a la
+        # cocina un plato que el cliente no habia pedido.
+        resumen = ", ".join(
+            f"{i['quantity']}x {i['name']}"
+            + (f" ({', '.join(i['modifications'])})" if i["modifications"] else "")
+            for i in items
+        )
         MetaWhatsAppService(
             phone_number_id=config["phone_number_id"],
             access_token=config["access_token"],

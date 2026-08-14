@@ -155,7 +155,9 @@ EXPECTED_SCHEMA = {
     ),
     "order_items": (
         "id", "tenant_id", "order_id", "item_id", "item_name",
-        "quantity", "unit_price", "subtotal", "created_at"
+        "quantity", "unit_price", "subtotal", "created_at",
+        # Migracion 024. Sin esto la cocina prepara el plato equivocado.
+        "modifications",
     ),
     "orders": (
         "id", "tenant_id", "cart_id", "customer_id", "order_number",
