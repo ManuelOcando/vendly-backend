@@ -40,6 +40,49 @@ def _is_deterministic_intent(message: str) -> bool:
     return any(matches_intent(normalized, intent) for intent in DETERMINISTIC_INTENTS)
 
 
+def _linea_de_producto(producto: Dict[str, Any]) -> str:
+    """Una linea del pedido: `• hamburguesa (sin cebolla) x2 - $20.00`."""
+    modificaciones = producto.get("modifications") or []
+    detalle = f" ({', '.join(modificaciones)})" if modificaciones else ""
+    cantidad = producto.get("quantity", 1)
+    subtotal = producto.get("price", 0) * cantidad
+    return f"• {producto.get('name', '')}{detalle} x{cantidad} - ${subtotal:.2f}"
+
+
+def fusionar_pendientes(
+    anteriores: Optional[List[Dict[str, Any]]],
+    nuevos: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Añade productos a lo que ya estaba pendiente de confirmar, sin perderlo.
+
+    Antes se reemplazaba. Un cliente pidio cinco productos por $50, y al decir
+    "ponme otra hamburguesa" la propuesta paso a ser solo esa hamburguesa por
+    $10: los cinco anteriores desaparecieron sin aviso, y eso fue lo que
+    confirmo.
+
+    Dos lineas se funden solo si son el mismo producto **con las mismas
+    modificaciones**: "hamburguesa" y "hamburguesa sin cebolla" son cosas
+    distintas en la cocina y tienen que seguir siendo dos lineas.
+
+    Para reemplazar el pedido en vez de ampliarlo, el cliente cancela y vuelve a
+    pedir; eso ya existe y responde a "no".
+    """
+    fusionados = [dict(p) for p in (anteriores or [])]
+
+    for nuevo in nuevos:
+        clave_nueva = (nuevo.get("product_id"), tuple(nuevo.get("modifications") or []))
+        for existente in fusionados:
+            clave = (existente.get("product_id"), tuple(existente.get("modifications") or []))
+            if clave == clave_nueva:
+                existente["quantity"] = existente.get("quantity", 1) + nuevo.get("quantity", 1)
+                break
+        else:
+            fusionados.append(dict(nuevo))
+
+    return fusionados
+
+
 class LLMHandler(BaseWhatsAppHandler):
     """
     Handler that uses LLM to process natural language messages.
@@ -337,46 +380,41 @@ class LLMHandler(BaseWhatsAppHandler):
             return response_text or t("llm.specify_product", language)
         
         # Match all products in database
-        pending_products = []
-        products_list_text = []
-        total = 0
-        
+        nuevos = []
+
         for product in products:
             matched_product = await self._find_product_in_db(tenant_id, product.get("name", ""))
-            
+
             if matched_product:
-                quantity = product.get("quantity", 1)
-                modifications = product.get("modifications", [])
-                price = matched_product["price"] * quantity
-                total += price
-                
-                pending_products.append({
+                nuevos.append({
                     "product_id": matched_product["id"],
                     "name": matched_product["name"],
                     "price": matched_product["price"],
-                    "quantity": quantity,
-                    "modifications": modifications
+                    "quantity": product.get("quantity", 1),
+                    "modifications": product.get("modifications", []),
                 })
-                
-                # Build product line
-                mod_text = ""
-                if modifications:
-                    mod_text = f" ({', '.join(modifications)})"
-                
-                products_list_text.append(f"• {matched_product['name']}{mod_text} x{quantity} - ${price:.2f}")
-        
-        if not pending_products:
+
+        if not nuevos:
             return t("llm.products_not_found", language)
-        
-        # Store pending products in session
+
+        # Se acumulan sobre lo que ya estaba pendiente, no lo reemplazan. Antes
+        # era una asignacion directa, asi que un cliente que decia "ponme otra
+        # hamburguesa" mientras tenia cinco productos sin confirmar perdia los
+        # cinco: el pedido pasaba de $50 a $10 sin avisar, y confirmaba eso.
         session_data = session.get("session_data", {}) or {}
-        session_data["pending_products"] = pending_products  # Store ALL products
+        pending_products = fusionar_pendientes(
+            session_data.get("pending_products"), nuevos
+        )
+
+        session_data["pending_products"] = pending_products
         session_data["awaiting_confirmation"] = True
-        
+
         await self.update_session_state(session_id, "awaiting_confirmation", session_data)
-        
-        # Build confirmation message with all products
-        products_text = "\n".join(products_list_text)
+
+        # El mensaje enseña el pedido entero, no solo lo ultimo añadido: es lo
+        # que el cliente esta a punto de confirmar.
+        total = sum(p["price"] * p["quantity"] for p in pending_products)
+        products_text = "\n".join(_linea_de_producto(p) for p in pending_products)
         
         return t(
             "order.confirm_products", language,
