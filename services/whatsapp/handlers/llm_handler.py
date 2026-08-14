@@ -12,6 +12,7 @@ from services.bot_personalities import resolve_personality
 from services.llm import get_llm_provider, LLMProvider
 from services.i18n import DEFAULT_LANGUAGE, matches_intent, t
 from services.whatsapp import estado_pedido
+from services.llm import salud as salud_llm
 from config import get_settings
 from utils.log_privacy import preview, tel
 
@@ -255,7 +256,10 @@ class LLMHandler(BaseWhatsAppHandler):
             
             # El LLM no dio nada usable: cede a la cadena determinista.
             if not isinstance(llm_response, dict) or not llm_response:
-                logger.error(f"❌ LLM unusable ({type(llm_response).__name__}), cediendo a la cadena determinista")
+                salud_llm.registrar_fallo(
+                    RuntimeError(f"respuesta inutilizable ({type(llm_response).__name__})")
+                )
+                logger.error("LLM unusable, cediendo a la cadena determinista")
                 return None
 
             # El proveedor no pudo parsear su propia salida y devolvio relleno.
@@ -263,8 +267,15 @@ class LLMHandler(BaseWhatsAppHandler):
             # cuela como si el LLM hubiera contestado y el cliente recibe una
             # disculpa en vez del saludo o el catalogo que la cadena si sabe dar.
             if llm_response.get("llm_error"):
-                logger.warning("⚠️ Relleno del proveedor, cediendo a la cadena determinista")
+                salud_llm.registrar_fallo(
+                    RuntimeError("el proveedor no pudo parsear su propia salida")
+                )
+                logger.warning("Relleno del proveedor, cediendo a la cadena determinista")
                 return None
+
+            # Contesto y es utilizable: si habia un fallo apuntado, ya no
+            # describe el presente.
+            salud_llm.registrar_exito()
 
             logger.info(f"✅ LLM response received!")
             logger.info(f"   Intention: {llm_response.get('intention', 'unknown')}")
@@ -326,12 +337,12 @@ class LLMHandler(BaseWhatsAppHandler):
                 return response_text
                 
         except Exception as e:
-            logger.error("="*60)
-            logger.error(f"❌ CRITICAL ERROR in LLMHandler.handle")
-            logger.error(f"Error type: {type(e).__name__}")
-            logger.error(f"Error message: {str(e)}")
-            logger.error(f"Full traceback:", exc_info=True)
-            logger.error("="*60)
+            # Deja constancia de que el bot esta degradado. Ceder es correcto;
+            # hacerlo en silencio no lo era: al agotarse la cuota de Gemini el
+            # bot dejo de entender modificaciones y de saber cancelar, y el
+            # unico rastro era este log. Ahora tambien sale en /health.
+            salud_llm.registrar_fallo(e)
+            logger.error("Traceback completo del fallo del LLM:", exc_info=True)
             # Ceder, no disculparse: la cadena determinista sabe saludar,
             # mostrar el menu y tomar un pedido por nombre sin tocar el LLM.
             return None

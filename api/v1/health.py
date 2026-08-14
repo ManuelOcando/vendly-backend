@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Request
 from api.deps import get_current_user
 from db.supabase import get_supabase_client
+from services.llm import salud as salud_llm
 from db.redis import get_redis_client
 from config import get_settings
 from middleware.rate_limiter import limiter
@@ -137,6 +138,12 @@ def _llm_config_report() -> dict:
         # Solo present/missing, nunca el valor: distingue "sin configurar" de
         # "configurada y rechazada", que es todo lo que hace falta saber aqui.
         "api_key": "present" if key else "missing",
+        # Si el bot esta contestando con el modelo o con la cadena determinista.
+        # Es configuracion mas un contador en memoria: sigue sin tocar la red.
+        # Antes esto no se veia en ningun sitio, y al agotarse la cuota diaria
+        # de Gemini el bot dejo de entender modificaciones y de saber cancelar
+        # sin que nada lo dijera.
+        **salud_llm.informe(),
     }
 
 
