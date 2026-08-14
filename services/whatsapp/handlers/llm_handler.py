@@ -648,7 +648,13 @@ class LLMHandler(BaseWhatsAppHandler):
             session_data = session.get("session_data", {}) or {}
             session_data["cart"] = []
             session_data["total"] = 0
+            # Las dos claves. Solo se limpiaba pending_product, la antigua en
+            # singular, y pending_products -- la que se usa -- sobrevivia a la
+            # cancelacion. Con _handle_add_to_cart volcando lo pendiente al
+            # carrito, eso resucitaba el pedido cancelado en cuanto el cliente
+            # pedia cualquier otra cosa.
             session_data["pending_product"] = None
+            session_data["pending_products"] = None
             session_data["awaiting_confirmation"] = False
             await self.update_session_state(session_id, "initial", session_data)
         

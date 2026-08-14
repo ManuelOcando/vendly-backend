@@ -105,3 +105,38 @@ class TestLaLineaQueVeElCliente:
 
     def test_sin_modificaciones_no_pone_parentesis_vacios(self):
         assert _linea_de_producto(producto("hamburguesa")) == "• hamburguesa x1 - $10.00"
+
+
+class TestCancelarLimpiaLasDosClaves:
+    """
+    _handle_cancel limpiaba pending_product -- la clave antigua, en singular --
+    y dejaba pending_products, que es la que se usa.
+
+    Inofensivo mientras nadie mirara los pendientes fuera de la confirmacion.
+    Dejo de serlo el 13/08/2026, cuando _handle_add_to_cart empezo a volcar lo
+    pendiente al carrito para no perderlo: a partir de ahi, cancelar y pedir
+    cualquier otra cosa resucitaba el pedido cancelado.
+    """
+
+    @pytest.mark.asyncio
+    async def test_cancelar_no_deja_productos_pendientes(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from services.whatsapp.handlers.llm_handler import LLMHandler
+
+        handler = LLMHandler(MagicMock())
+        handler.update_session_state = AsyncMock()
+
+        sesion = {"id": "s-1", "session_data": {
+            "cart": [producto("hamburguesa")],
+            "pending_products": [producto("perro caliente", 4)],
+            "awaiting_confirmation": True,
+        }}
+
+        await handler._handle_cancel("", sesion, "es")
+
+        _, _, datos = handler.update_session_state.await_args.args
+        assert datos["cart"] == []
+        assert not datos["pending_products"], "el pedido cancelado sigue pendiente"
+        assert not datos["pending_product"]
+        assert datos["awaiting_confirmation"] is False
