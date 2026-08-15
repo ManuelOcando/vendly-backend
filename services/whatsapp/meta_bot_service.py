@@ -12,8 +12,10 @@ from db.whatsapp_config import fetch_config
 from services.whatsapp.handlers import (
     MenuHandler, WelcomeHandler, ProductOrderHandler, ConfirmationHandler,
     CartHandler, CartConfirmationHandler, SellerMenuHandler, LLMHandler,
-    OnboardingHandler, PostSaleHandler, ServiceSchedulingHandler
+    OnboardingHandler, PostSaleHandler, ServiceSchedulingHandler,
+    CierreDePedidoHandler, CancelarPedidoHandler
 )
+from services.whatsapp import estado_pedido
 from services.conversational_dashboard import ConversationalDashboard
 from services.offline_mode_service import OfflineModeService
 from services.i18n import DEFAULT_LANGUAGE, detect_language, normalize_language, t
@@ -45,6 +47,8 @@ class MetaWhatsAppBotService:
         #   CartConfirmationHandler yes/no while viewing a storefront cart
         #   PostSaleHandler        order status, returns, changes
         #   ServiceSchedulingHandler appointment booking
+        #   CancelarPedidoHandler  "cancelar": empties the order
+        #   CierreDePedidoHandler  "eso es todo": shows the summary and asks
         #   MenuHandler            "menu"/"catalog" keywords
         #   WelcomeHandler         a bare greeting on a fresh conversation
         #   ProductOrderHandler    catch-all: treats the text as product names
@@ -53,11 +57,17 @@ class MetaWhatsAppBotService:
         # answers with the catalog rather than a greeting, and
         # ProductOrderHandler is last because its can_handle accepts nearly
         # anything that isn't a known command.
+        #
+        # CancelarPedidoHandler goes *after* ServiceSchedulingHandler because
+        # "cancelar mi cita" contains "cancelar": the appointment claims it
+        # first, and cancelling an appointment must not wipe an order.
         cart_handler = CartHandler(self.db)
         confirmation_handler = ConfirmationHandler(self.db)
         cart_confirmation_handler = CartConfirmationHandler(self.db)
         post_sale_handler = PostSaleHandler(self.db)
         scheduling_handler = ServiceSchedulingHandler(self.db)
+        cancelar_handler = CancelarPedidoHandler(self.db)
+        cierre_handler = CierreDePedidoHandler(self.db)
         menu_handler = MenuHandler(self.db)
         welcome_handler = WelcomeHandler(self.db)
         product_order_handler = ProductOrderHandler(self.db)
@@ -66,7 +76,9 @@ class MetaWhatsAppBotService:
         confirmation_handler.next_handler = cart_confirmation_handler
         cart_confirmation_handler.next_handler = post_sale_handler
         post_sale_handler.next_handler = scheduling_handler
-        scheduling_handler.next_handler = menu_handler
+        scheduling_handler.next_handler = cancelar_handler
+        cancelar_handler.next_handler = cierre_handler
+        cierre_handler.next_handler = menu_handler
         menu_handler.next_handler = welcome_handler
         welcome_handler.next_handler = product_order_handler
 
@@ -462,10 +474,23 @@ class MetaWhatsAppBotService:
     async def _default_response(self, message_data: Dict[str, Any]) -> str:
         """Default response when no handler matches"""
         language = message_data.get("language", DEFAULT_LANGUAGE)
-        state = message_data.get("session", {}).get("current_state", "initial")
+        session = message_data.get("session", {}) or {}
+        state = session.get("current_state", "initial")
 
         if state == "viewing_cart":
             return t("bot.viewing_cart_default", language)
+
+        # Con un pedido a medias no se puede saludar como si no existiera. Es
+        # donde caia el "no" que el propio resumen invita a escribir para
+        # seguir agregando: no lo reclamaba ningun handler y el cliente recibia
+        # el menu de bienvenida, sin rastro de lo que llevaba pedido.
+        estado = estado_pedido.leer(session.get("session_data"))
+        if estado.carrito:
+            return t(
+                "bot.ordering_default", language,
+                items="\n".join(estado_pedido.linea_texto(l) for l in estado.carrito),
+                total=f"{estado.total:.2f}",
+            )
 
         return t("bot.default_menu", language)
     

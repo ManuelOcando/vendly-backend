@@ -13,9 +13,9 @@ un cliente perdido, y ni una linea en los logs que lo explique.
 """
 import pytest
 
+from services.whatsapp.estado_pedido import linea_texto
 from services.whatsapp.handlers.customer import (
     crear_pedido,
-    linea_de_carrito,
     normalizar_items,
 )
 
@@ -97,13 +97,16 @@ class TestLleganAlPedido:
 
 
 class TestLasVeElVendedorYElCliente:
+    # `linea_de_carrito` vivia en customer.py y era una copia exacta de
+    # `linea_texto`. Se borro: eran las dos mismas lineas en dos sitios, que es
+    # como una de ellas se olvido de las modificaciones la primera vez.
     def test_el_resumen_del_carrito_las_enseña(self):
-        linea = linea_de_carrito(item_de_sesion(modificaciones=["sin cebolla"]))
+        linea = linea_texto(item_de_sesion(modificaciones=["sin cebolla"]))
         assert "sin cebolla" in linea
         assert linea == "• hamburguesa (sin cebolla) x1 - $10.00"
 
     def test_sin_modificaciones_no_deja_parentesis_vacios(self):
-        assert linea_de_carrito(item_de_sesion()) == "• hamburguesa x1 - $10.00"
+        assert linea_texto(item_de_sesion()) == "• hamburguesa x1 - $10.00"
 
     @pytest.mark.asyncio
     async def test_el_aviso_al_vendedor_las_lleva(self):

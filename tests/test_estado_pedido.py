@@ -11,8 +11,10 @@ modulo existe por ellos:
 El ultimo bloque es el guardia: nadie fuera de estado_pedido.py escribe esas
 claves. Es lo que impide que se abra la casilla siguiente.
 """
+import ast
 import re
 from pathlib import Path
+from typing import List
 
 import pytest
 
@@ -25,6 +27,7 @@ from services.whatsapp.estado_pedido import (
     confirmar,
     descartar,
     leer,
+    modificar,
     proponer,
     quitar,
     vaciar,
@@ -202,6 +205,70 @@ class TestElParcheLlevaSiempreLasSieteClaves:
         assert datos["cart"][0]["modifications"] == ["sin cebolla"]
 
 
+class TestModificarLoYaPedido:
+    """
+    "La hamburguesa la quiero sin salsa" cuando ya esta en el carrito.
+
+    Vivia dentro del handler del LLM y sin una sola prueba. Fusionaba con
+    `set()`, asi que el orden de las modificaciones bailaba entre mensajes --
+    y eso es lo que se le enseña al cliente y lo que lee la cocina.
+    """
+
+    def test_la_modificacion_se_pega_a_la_linea(self):
+        estado = añadir(EstadoPedido(), [HAMBURGUESA])
+        nuevo, linea = modificar(estado, "hamburguesa", ["sin salsa"])
+
+        assert linea.modificaciones == ("sin salsa",)
+        assert nuevo.carrito[0].modificaciones == ("sin salsa",)
+
+    def test_se_acumulan_en_el_orden_en_que_las_pidio(self):
+        estado, _ = modificar(añadir(EstadoPedido(), [SIN_CEBOLLA]), "hamburguesa", ["sin salsa"])
+        assert estado.carrito[0].modificaciones == ("sin cebolla", "sin salsa")
+
+    def test_no_se_repiten(self):
+        estado, _ = modificar(añadir(EstadoPedido(), [SIN_CEBOLLA]), "hamburguesa", ["sin cebolla"])
+        assert estado.carrito[0].modificaciones == ("sin cebolla",)
+
+    def test_lo_que_no_esta_en_el_carrito_no_inventa_una_linea(self):
+        estado = añadir(EstadoPedido(), [HAMBURGUESA])
+        nuevo, linea = modificar(estado, "sushi", ["sin alga"])
+
+        assert linea is None
+        assert nuevo == estado
+
+    def test_el_precio_no_se_toca(self):
+        estado, _ = modificar(añadir(EstadoPedido(), [HAMBURGUESA, PERRO]), "perro", ["sin cebolla"])
+        assert estado.total == 30.0
+
+    def test_tambien_encuentra_en_lo_solo_propuesto(self):
+        """
+        Corregir algo que el bot acaba de proponer es lo mas normal. Mirando
+        solo el carrito se trataba como un producto nuevo: en vivo, pidio 2
+        hamburguesas sin cebolla, dijo "que sea sin salsa tambien", y acabo con
+        tres hamburguesas.
+        """
+        estado = proponer(EstadoPedido(), [HAMBURGUESA])
+        nuevo, linea = modificar(estado, "hamburguesa", ["sin salsa"])
+
+        assert linea is not None, "no la encontro porque estaba pendiente"
+        assert nuevo.pendientes[0].modificaciones == ("sin salsa",)
+        assert len(nuevo.pendientes) == 1, "la duplico en vez de corregirla"
+        assert nuevo.carrito == ()
+
+    def test_el_carrito_manda_sobre_lo_pendiente(self):
+        """Si esta en los dos sitios, se corrige lo que ya esta aceptado."""
+        estado = proponer(añadir(EstadoPedido(), [HAMBURGUESA]), [HAMBURGUESA])
+        nuevo, _ = modificar(estado, "hamburguesa", ["sin salsa"])
+
+        assert nuevo.carrito[0].modificaciones == ("sin salsa",)
+        assert nuevo.pendientes[0].modificaciones == ()
+
+    def test_una_modificacion_vacia_no_hace_nada(self):
+        estado = añadir(EstadoPedido(), [HAMBURGUESA])
+        assert modificar(estado, "hamburguesa", []) == (estado, None)
+        assert modificar(estado, "", ["sin salsa"]) == (estado, None)
+
+
 class TestNadieEscribeElEstadoPorSuCuenta:
     """
     El guardia. Sin el, la proxima rama que alguien escriba volvera a tocar
@@ -210,6 +277,9 @@ class TestNadieEscribeElEstadoPorSuCuenta:
 
     RAIZ = Path(__file__).resolve().parent.parent
     DUEÑO = RAIZ / "services" / "whatsapp" / "estado_pedido.py"
+    CLAVES_DEL_PEDIDO = {
+        "cart", "pending_products", "pending_product", "awaiting_confirmation", "total",
+    }
     ESCRITURA = re.compile(
         r"""session_data\s*\[\s*["'](cart|pending_products|pending_product|"""
         r"""awaiting_confirmation|total)["']\s*\]\s*="""
@@ -240,6 +310,88 @@ class TestNadieEscribeElEstadoPorSuCuenta:
 
     def test_el_detector_no_marca_una_lectura(self):
         assert not self.ESCRITURA.search('cart = session_data.get("cart", [])')
+
+
+def parches_a_mano(fuente: str) -> List[str]:
+    """
+    Llamadas a update_session_state que pasan un diccionario literal con alguna
+    de las claves del pedido.
+
+    Se mira el arbol y no el texto porque la llamada ocupa varias lineas y
+    porque hay que distinguir `{"cart": cart, "total": total}` -- un parche
+    parcial -- de `{**a_session_data(estado), "order_id": ...}`, que sí escribe
+    las siete y solo añade lo suyo al lado.
+    """
+    hallazgos = []
+    for nodo in ast.walk(ast.parse(fuente)):
+        if not isinstance(nodo, ast.Call):
+            continue
+        nombre = nodo.func.attr if isinstance(nodo.func, ast.Attribute) else getattr(nodo.func, "id", "")
+        if nombre != "update_session_state":
+            continue
+
+        datos = nodo.args[2] if len(nodo.args) > 2 else next(
+            (k.value for k in nodo.keywords if k.arg == "data"), None
+        )
+        if not isinstance(datos, ast.Dict):
+            continue
+
+        literales = {
+            k.value for k in datos.keys
+            if isinstance(k, ast.Constant) and isinstance(k.value, str)
+        }
+        tocadas = literales & TestNadieEscribeElEstadoPorSuCuenta.CLAVES_DEL_PEDIDO
+        if tocadas:
+            hallazgos.append(f"linea {nodo.lineno}: {sorted(tocadas)}")
+    return hallazgos
+
+
+class TestNadieParcheaElEstadoAlGuardarlo:
+    """
+    La segunda mitad del guardia, y la que faltaba.
+
+    El de arriba solo ve `session_data["cart"] = ...`. ProductOrderHandler
+    nunca escribio asi: pasaba `{"cart": cart, "total": total}` a
+    update_session_state, que es la misma infraccion por la puerta de al lado.
+    Dejaba `pending_products` y `awaiting_confirmation` vivos debajo del
+    carrito nuevo -- exactamente la casilla vacia que produjo los tres fallos
+    de pedidos del 13/08 -- y paso un mes sin que nada se pusiera rojo.
+    """
+
+    def test_ningun_handler_guarda_un_parche_parcial(self):
+        infractores = []
+        raiz = TestNadieEscribeElEstadoPorSuCuenta.RAIZ
+        for ruta in raiz.rglob("*.py"):
+            if any(x in ruta.parts for x in ("venv", "tests", "__pycache__")):
+                continue
+            for hallazgo in parches_a_mano(ruta.read_text(encoding="utf-8", errors="ignore")):
+                infractores.append(f"{ruta.relative_to(raiz)}:{hallazgo}")
+
+        assert not infractores, (
+            "Estos sitios guardan el estado del pedido a trozos. Pasa "
+            "estado_pedido.a_session_data(estado), que escribe las siete "
+            "claves:\n  " + "\n  ".join(infractores)
+        )
+
+    def test_el_detector_reconoce_el_parche_que_se_le_escapo(self):
+        """La linea real de ProductOrderHandler, tal como estuvo un mes."""
+        assert parches_a_mano(
+            'await self.update_session_state(session_id, "ordering",'
+            ' {"cart": cart, "total": total})'
+        )
+
+    def test_el_detector_deja_pasar_lo_que_viene_del_modulo(self):
+        assert not parches_a_mano(
+            'await self.update_session_state(session_id, "ordering",'
+            " estado_pedido.a_session_data(estado))"
+        )
+        # Y la forma de CartConfirmationHandler: las siete del modulo, mas lo
+        # que no es del pedido.
+        assert not parches_a_mano(
+            'await self.update_session_state(session_id, "payment_pending",'
+            " {**estado_pedido.a_session_data(estado_pedido.EstadoPedido()),"
+            ' "order_id": pedido.order_id, "cart_id": None})'
+        )
 
 
 class TestQuitarDelCarritoPorConversacion:

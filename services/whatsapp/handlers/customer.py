@@ -12,13 +12,20 @@ from db.redis import get_redis_client
 from db.whatsapp_config import fetch_config
 from services.payment_instructions import compose as compose_payment_instructions
 from services.whatsapp import estado_pedido
+from services.whatsapp.modificaciones import (
+    VERBOS_AÑADIR, VERBOS_QUITAR, parece_modificacion, posibles_cortes,
+    preposicion,
+)
 from services.whatsapp.meta_service import MetaWhatsAppService
 from services.customer_profile import CustomerProfileService
 from services.recommendation_engine import RecommendationEngine
 from services.recommendation_tracker import RecommendationTracker
 from models.recommendation import RecommendationRequest
 from api.deps import tenant_has_feature
-from services.i18n import DEFAULT_LANGUAGE, matches_intent, matches_word_intent, t
+from services.i18n import (
+    DEFAULT_LANGUAGE, _strip_accents, keywords_for, matches_intent,
+    matches_word_intent, t,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,18 +110,115 @@ def _acotar(cantidad: int) -> int:
     return max(1, min(cantidad, CANTIDAD_MAXIMA))
 
 
-def linea_de_carrito(item: Dict[str, Any]) -> str:
-    """
-    Una linea del carrito, con lo que el cliente pidio cambiar.
+# Como se refiere la gente al pedido entero. Si lo que queda tras "cancela" es
+# una de estas, se cancela todo; si nombra un producto, se quita ese producto.
+_EL_PEDIDO_ENTERO = {
+    "pedido", "orden", "todo", "carrito", "compra", "pedidos", "cuenta",
+    "order", "everything", "all", "cart", "purchase",
+    "tudo", "carrinho", "compras",
+}
 
-    Se omitian: el resumen decia "hamburguesa x1" cuando el cliente habia pedido
-    una hamburguesa sin cebolla, y eso es lo que confirmaba sin poder revisarlo.
+# Lo que sobra al principio de "cancela **las** papas".
+_ARTICULOS = {
+    "el", "la", "los", "las", "un", "una", "unos", "unas", "mi", "mis", "este",
+    "esta", "estos", "estas", "ese", "esa", "esos", "esas", "de", "del",
+    "the", "my", "this", "that", "these", "those", "a", "an", "of",
+    "o", "as", "os", "meu", "meus", "minha", "minhas", "esse", "essa",
+}
+
+
+def _palabras_restantes(mensaje: str, intencion: str, fuera=()) -> List[str]:
     """
-    modificaciones = item.get("modifications") or []
-    detalle = f" ({', '.join(modificaciones)})" if modificaciones else ""
-    cantidad = item.get("quantity", 1)
-    return (f"• {item.get('name', '')}{detalle} x{cantidad}"
-            f" - ${item.get('price', 0) * cantidad:.2f}")
+    Lo que queda del mensaje quitando las claves de `intencion`, los articulos
+    y `fuera`. Es "que nombro el cliente, aparte de darme la orden".
+
+    Las claves de varias palabras se quitan como frase; las de una, por palabra
+    entera. Quitando subcadenas, "cancelar" dejaba una "r" suelta que luego
+    pasaba por nombre de producto.
+    """
+    texto = _strip_accents((mensaje or "").lower().strip())
+    claves = [_strip_accents(k.lower()) for k in keywords_for(intencion)]
+
+    sueltas = []
+    for clave in claves:
+        if " " in clave:
+            texto = texto.replace(clave, " ")
+        else:
+            sueltas.append(clave)
+
+    descartar = set(_ARTICULOS) | {_strip_accents(f.lower()) for f in fuera}
+
+    return [
+        p for p in re.split(r"[^\w]+", texto)
+        if p
+        and not any(p.startswith(clave) for clave in sueltas)
+        and p not in descartar
+    ]
+
+
+def que_se_cancela(mensaje: str) -> Optional[str]:
+    """
+    Que nombro el cliente al cancelar. None si se refiere al pedido entero.
+
+    "cancela las papas" -> "papas"      (quitar ese producto)
+    "cancelar mi pedido" -> None        (vaciar)
+    "cancelar"           -> None        (vaciar)
+
+    Existe porque el modelo no sabe distinguirlas. Probando contra Gemini, la
+    misma frase -- "cancela las papas" -- borro el pedido entero en una
+    ejecucion y en otra contesto "he quitado las Papas" sin tocar nada. Las dos
+    veces se lo confirmo al cliente.
+    """
+    palabras = _palabras_restantes(mensaje, "cancel_order")
+
+    if not palabras or all(p in _EL_PEDIDO_ENTERO for p in palabras):
+        return None
+
+    return " ".join(palabras)
+
+
+def modificacion_suelta(mensaje: str, nombre_producto: str = "") -> List[str]:
+    """
+    La modificacion que el cliente dejo sin preposicion que la marque.
+
+    "ponle queso a la hamburguesa"    -> ["con queso"]
+    "quitale la cebolla"              -> ["sin cebolla"]
+    "la hamburguesa que sea grande"   -> ["grande"]
+    "la hamburguesa que sea sin salsa"-> []      ya la coge posibles_cortes
+
+    `posibles_cortes` encuentra la modificacion buscando un `sin `/`con ` que
+    diga donde empieza. En "ponle queso" no hay ninguno: "queso" va suelto, asi
+    que se casaba "Hamburguesa" por contencion sobre la frase entera y se
+    añadia una hamburguesa pelada. El queso desaparecia sin un solo error.
+
+    Es una heuristica -- coge lo que sobra -- y a veces recogera de mas ("que
+    sea para llevar" -> "para llevar"). Eso es aceptable: queda escrito y el
+    vendedor lo lee. Descartarlo en silencio no lo es.
+    """
+    # Fuera el nombre del producto y el propio verbo. Los verbos no estan todos
+    # en las claves de `correction` -- "agregale" solo vive en VERBOS_AÑADIR --
+    # y sin esto la modificacion salia "con agregale tocineta".
+    fuera = list(re.split(r"[^\w]+", nombre_producto or ""))
+    fuera += [palabra for verbo in VERBOS_AÑADIR + VERBOS_QUITAR
+              for palabra in verbo.split()]
+
+    palabras = _palabras_restantes(mensaje, "correction", fuera=fuera)
+    if not palabras:
+        return []
+
+    return [preposicion(mensaje) + " ".join(palabras)]
+
+
+def _acuse(linea: "estado_pedido.Linea") -> str:
+    """
+    Lo que se le confirma al cliente de cada producto que acaba de entrar.
+
+    Lleva las modificaciones: confirmar "Hamburguesa" cuando se pidio sin
+    cebolla es pedirle al cliente que de por bueno algo que no puede revisar.
+    """
+    detalle = f" ({', '.join(linea.modificaciones)})" if linea.modificaciones else ""
+    cantidad = f" x{linea.cantidad}" if linea.cantidad > 1 else ""
+    return f"{linea.nombre}{detalle}{cantidad}"
 
 
 class WelcomeHandler(BaseWhatsAppHandler):
@@ -207,6 +311,9 @@ class ProductOrderHandler(BaseWhatsAppHandler):
             return False
         if matches_word_intent(message, "confirm") or matches_word_intent(message, "reject"):
             return False
+        # Cerrar el pedido no es pedir un producto llamado "eso es todo".
+        if matches_word_intent(message, "finish"):
+            return False
 
         return True
     
@@ -228,38 +335,66 @@ class ProductOrderHandler(BaseWhatsAppHandler):
     async def _find_product(
         self, tenant_id: str, search_term: str, language: str = DEFAULT_LANGUAGE
     ) -> tuple:
-        """Find product by search term. Returns (product, error_message)"""
-        search_normalized = self._normalize_text(search_term)
-        
+        """
+        Busca el producto y separa lo que el cliente pidio cambiarle.
+
+        Devuelve (product, modificaciones, error_message).
+
+        El catalogo es quien decide donde acaba el nombre del producto y donde
+        empieza la modificacion. Se prueban las lecturas de `posibles_cortes`
+        de la mas larga a la mas corta: asi "Cafe con leche" casa entera antes
+        de que nadie parta por " con ", y "hamburguesa sin cebolla" -- que no
+        casa entera -- acaba en la lectura que sí trae la modificacion.
+
+        Antes se buscaba el texto entero y se casaba por contencion, asi que
+        "hamburguesa sin cebolla" encontraba "Hamburguesa" y la modificacion se
+        perdia por el camino sin un solo error: el cliente leia `✅ Hamburguesa`
+        y la cocina recibia cebolla.
+        """
         # Search for products
         items_result = self.db.table("items").select(
             "id, name, price, description"
         ).eq("tenant_id", tenant_id).eq("is_active", True).execute()
-        
+
         if not items_result.data:
-            return None, t("product.none_available", language)
-        
-        # Buscar coincidencia exacta primero (sin acentos)
-        for item in items_result.data:
-            item_name_normalized = self._normalize_text(item['name'])
-            if search_normalized == item_name_normalized:
-                return item, None
-        
-        # Buscar coincidencia parcial
-        matches = []
-        for item in items_result.data:
-            item_name_normalized = self._normalize_text(item['name'])
-            if search_normalized in item_name_normalized or item_name_normalized in search_normalized:
-                matches.append(item)
-        
-        if len(matches) == 0:
-            return None, t("product.not_found", language, name=search_term)
-        elif len(matches) == 1:
-            return matches[0], None
-        else:
-            # Multiple matches - return list for user to choose
-            product_list = "\n".join([f"• {m['name']} - ${m['price']:.2f}" for m in matches[:5]])
-            return None, t("product.which_one", language, options=product_list)
+            return None, [], t("product.none_available", language)
+
+        lecturas = [
+            (self._normalize_text(nombre), mods)
+            for nombre, mods in posibles_cortes(search_term)
+        ]
+        catalogo = [
+            (item, self._normalize_text(item["name"])) for item in items_result.data
+        ]
+
+        # Coincidencia exacta: de la lectura mas larga a la mas corta, para que
+        # "Cafe con leche" case entero antes de que nadie parta por " con ".
+        for nombre, mods in lecturas:
+            for item, item_normalizado in catalogo:
+                if nombre == item_normalizado:
+                    return item, mods, None
+
+        # Coincidencia parcial, y aqui el orden se invierte: de la mas corta a
+        # la mas larga. Casar por contencion es tolerante en los dos sentidos,
+        # asi que la lectura larga siempre casa -- "hamburguesa" esta contenida
+        # en "hamburguesas sin cebolla" -- y se lleva la modificacion por
+        # delante, que es el fallo original. La lectura corta deja menos texto
+        # sin explicar: lo que sobra queda escrito como modificacion en vez de
+        # desaparecer.
+        for nombre, mods in reversed(lecturas):
+            matches = [
+                item for item, item_normalizado in catalogo
+                if nombre in item_normalizado or item_normalizado in nombre
+            ]
+
+            if len(matches) == 1:
+                return matches[0], mods, None
+            if len(matches) > 1:
+                # Multiple matches - return list for user to choose
+                product_list = "\n".join([f"• {m['name']} - ${m['price']:.2f}" for m in matches[:5]])
+                return None, [], t("product.which_one", language, options=product_list)
+
+        return None, [], t("product.not_found", language, name=search_term)
     
     async def handle(self, message_data: Dict[str, Any]) -> Optional[str]:
         """Handle product order by name - supports multiple products"""
@@ -277,67 +412,148 @@ class ProductOrderHandler(BaseWhatsAppHandler):
                 return None  # Let next handler handle it
             
             logger.info(f"Processing {len(product_names)} product(s): {product_names}")
-            
-            # Get or create session cart
-            session_data = session.get("session_data", {}) or {}
-            cart = session_data.get("cart", [])
-            
+
+            # El estado se lee y se escribe entero por estado_pedido. Aqui se
+            # llevaba a mano -- se fusionaba por product_id ignorando las
+            # modificaciones, y se guardaba un parche con solo `cart` y `total`
+            # que dejaba `pending_products` vivo debajo. Es el patron que
+            # produjo los tres fallos de pedidos del 13/08.
+            estado = estado_pedido.leer(session.get("session_data"))
+
+            # "La hamburguesa que sea sin salsa" con una hamburguesa ya pedida
+            # es corregirla, no pedir otra. Este handler solo sabia añadir, y
+            # desde que entiende modificaciones `_fusionar` separa las lineas
+            # por (id, modificaciones), asi que una correccion le parecia un
+            # producto distinto: el cliente acababa pagando dos.
+            #
+            # Hace falta que lo diga con palabras de correccion. "hamburguesa
+            # sin salsa" a secas sigue añadiendo: equivocarse añadiendo de mas
+            # se ve en el resumen antes de confirmar, y una correccion tomada
+            # por añadido no se ve hasta que llega el pedido.
+            # Un verbo de añadir o quitar es tan correccion como "que sea":
+            # se pregunta a `preposicion` en vez de repetir la lista de verbos
+            # en las claves de i18n, que es como se desincronizan.
+            es_correccion = (
+                matches_intent(raw_message, "correction")
+                or bool(preposicion(raw_message))
+            )
+
+            nuevas = []
             added_products = []
+            corregidas = []
             errors = []
-            
+
             # Process each product
             for fragmento in product_names:
+                # "hamburguesa sin cebolla y sin mayonesa" se parte en dos por
+                # el separador " y ", y el segundo trozo no es un producto: es
+                # lo que hay que hacerle al anterior. Sin esto el cliente leia
+                # 'No encontre "sin mayonesa"' y se quedaba sin la mayonesa
+                # quitada. Misma cura que reasignar_modificaciones en la ruta
+                # del LLM, que parte igual de mal por su cuenta.
+                if parece_modificacion(fragmento) and nuevas:
+                    ultima = nuevas[-1]
+                    nuevas[-1] = ultima._replace(
+                        modificaciones=ultima.modificaciones + (fragmento.strip(),)
+                    )
+                    added_products[-1] = _acuse(nuevas[-1])
+                    continue
+
                 # "2 hamburguesas" -> (2, "hamburguesas"). El nombre se busca ya
                 # sin el numero delante, que si no no casa con el del catalogo.
                 cantidad, product_name = extraer_cantidad(fragmento)
 
-                product, error = await self._find_product(tenant_id, product_name, language)
+                product, modificaciones, error = await self._find_product(
+                    tenant_id, product_name, language
+                )
+
+                # Corregir lo que ya esta pedido, en el carrito o solo propuesto.
+                if es_correccion and product:
+                    # "ponle queso": la modificacion va suelta, sin un `sin `/
+                    # `con ` que diga donde empieza, asi que posibles_cortes no
+                    # la ve y se añadia una hamburguesa pelada.
+                    # Del **fragmento**, no del mensaje entero: "ponle queso y
+                    # unas papas" se parte en dos, y mirando el mensaje entero
+                    # la modificacion salia "con queso y papas".
+                    cambios = modificaciones or modificacion_suelta(
+                        fragmento, product["name"]
+                    )
+                    if cambios:
+                        estado, tocada = estado_pedido.modificar(
+                            estado, product["name"], cambios
+                        )
+                        if tocada:
+                            corregidas.append(_acuse(tocada))
+                            continue
+                    # No estaba pedido: corregir algo que no tienes es pedirlo.
+
+                # "que sea sin cebolla", sin nombrar el producto. Solo se aplica
+                # si hay exactamente una linea, porque entonces no hay nada que
+                # adivinar. Con dos o mas se pregunta en vez de acertar a medias.
+                if es_correccion and not product:
+                    _, sueltas = posibles_cortes(product_name)[-1]
+                    sueltas = sueltas or modificacion_suelta(fragmento)
+                    lineas = estado.carrito or estado.pendientes
+                    if sueltas and len(lineas) == 1:
+                        estado, tocada = estado_pedido.modificar(
+                            estado, lineas[0].nombre, sueltas
+                        )
+                        if tocada:
+                            corregidas.append(_acuse(tocada))
+                            continue
+                    if sueltas and len(lineas) > 1:
+                        return t("llm.what_to_modify", language)
 
                 if product:
-                    # Check if already in cart (increment quantity)
-                    existing = next((item for item in cart if item["product_id"] == product["id"]), None)
-                    if existing:
-                        existing["quantity"] += cantidad
-                        added_products.append(f"{product['name']} x{existing['quantity']}")
-                    else:
-                        cart_item = {
-                            "product_id": product["id"],
-                            "name": product["name"],
-                            "price": product["price"],
-                            "quantity": cantidad
-                        }
-                        cart.append(cart_item)
-                        added_products.append(
-                            f"{product['name']} x{cantidad}" if cantidad > 1 else product["name"]
-                        )
+                    nuevas.append(estado_pedido.Linea(
+                        id=product["id"],
+                        nombre=product["name"],
+                        precio=product["price"],
+                        cantidad=cantidad,
+                        modificaciones=tuple(modificaciones),
+                    ))
+                    added_products.append(_acuse(nuevas[-1]))
                 else:
                     errors.append(f"• {product_name}: {error}")
-            
+
             # If nothing was added and there are errors
-            if not added_products and errors:
+            if not added_products and not corregidas and errors:
                 return t("product.could_not_add", language, errors="\n".join(errors))
-            
-            # Calculate total
-            total = sum(item["price"] * item["quantity"] for item in cart)
-            
+
+            # Solo si hay algo que añadir. `añadir(estado, [])` no es inocuo:
+            # funde los pendientes en el carrito, o sea da por aceptada una
+            # propuesta que el cliente no ha confirmado. Con correcciones puras
+            # `nuevas` queda vacia, que es cuando se notaria.
+            if nuevas:
+                estado = estado_pedido.añadir(estado, nuevas)
+
             # Update session
             session_id = session.get("id")
             if session_id:
                 await self.update_session_state(
-                    session_id, 
-                    "ordering", 
-                    {"cart": cart, "total": total}
+                    session_id, "ordering", estado_pedido.a_session_data(estado)
                 )
-            
+
+            lineas = estado.carrito or estado.pendientes
+            cart_text = "\n".join(estado_pedido.linea_texto(l) for l in lineas)
+            total = estado.total or estado.total_pendiente
+
+            # Solo se corrigio: se dice que se modifico, con las mismas palabras
+            # que usa la ruta del LLM para lo mismo.
+            if corregidas and not added_products:
+                return t(
+                    "llm.modified", language,
+                    details=", ".join(corregidas),
+                    items=cart_text, total=f"{total:.2f}",
+                )
+
             # Build response
             added_text = "\n".join([f"✅ {name}" for name in added_products])
-            
-            cart_text = "\n".join(linea_de_carrito(item) for item in cart)
-            
+
             error_text = ""
             if errors:
                 error_text = "\n\n" + t("cart.not_found_header", language) + "\n" + "\n".join(errors)
-            
+
             return t(
                 "cart.summary", language,
                 added=added_text, items=cart_text,
@@ -371,7 +587,14 @@ class ConfirmationHandler(BaseWhatsAppHandler):
         
         if not (is_awaiting and has_pending):
             return False
-        
+
+        # "cancelar" tambien casa con `reject`, pero no significa lo mismo:
+        # aqui solo se descartaria la propuesta y el carrito seguiria vivo,
+        # cuando el cliente pidio deshacerse de todo. Se deja pasar a
+        # CancelarPedidoHandler.
+        if matches_intent(message, "cancel_order"):
+            return False
+
         # Check if message is a confirmation response. Whole-word matching:
         # a bare substring "no" fires inside product names like "normal".
         return (
@@ -429,6 +652,133 @@ class ConfirmationHandler(BaseWhatsAppHandler):
             return t("confirmation.discarded", language)
 
         return None  # Let next handler process
+
+
+class CierreDePedidoHandler(BaseWhatsAppHandler):
+    """
+    "Eso es todo": el cliente termina de pedir.
+
+    Es como cierra la gente, y no existia. ProductOrderHandler es el ultimo de
+    la cadena y acepta casi cualquier texto como nombre de producto, asi que la
+    frase con la que un cliente cierra su pedido le devolvia
+    'No encontre "eso es todo"' -- un error, en el ultimo paso, justo antes de
+    la unica linea de `orders` que importa.
+
+    No cierra el pedido por su cuenta: enseña el resumen y pregunta. El "si"
+    que viene despues lo recoge CartConfirmationHandler, que es quien inserta.
+    """
+
+    async def can_handle(self, message_data: Dict[str, Any]) -> bool:
+        message = message_data.get("message", "").lower().strip()
+        if not matches_word_intent(message, "finish"):
+            return False
+
+        # Cuenta tambien lo que solo esta propuesto: quien dice "eso es todo"
+        # con una propuesta delante la esta dando por buena, y mirar solo el
+        # carrito le dejaba el cierre sin dueño.
+        session_data = message_data.get("session", {}).get("session_data") or {}
+        return not estado_pedido.leer(session_data).vacio
+
+    async def handle(self, message_data: Dict[str, Any]) -> Optional[str]:
+        session = message_data.get("session", {}) or {}
+        language = message_data.get("language", DEFAULT_LANGUAGE)
+
+        estado = estado_pedido.leer(session.get("session_data"))
+        if estado.vacio:
+            return t("cart.empty", language)
+
+        # Lo pendiente entra al carrito: quien dice "eso es todo" da por buena
+        # la propuesta que tenia delante.
+        estado = estado_pedido.confirmar(estado)
+
+        session_id = session.get("id")
+        if session_id:
+            await self.update_session_state(
+                session_id, "ordering", estado_pedido.a_session_data(estado)
+            )
+
+        return t(
+            "order.summary", language,
+            items="\n".join(estado_pedido.linea_texto(l) for l in estado.carrito),
+            total=f"{estado.total:.2f}",
+        )
+
+
+class CancelarPedidoHandler(BaseWhatsAppHandler):
+    """
+    "Cancelar": quita lo que el cliente nombre, o el pedido entero.
+
+    No habia ningun camino determinista para esto. "cancelar" casa con la
+    intencion `reject`, asi que ProductOrderHandler lo rechazaba y
+    ConfirmationHandler solo actuaba si habia productos pendientes: sin LLM,
+    nadie lo atendia. El cliente leia el menu generico y su carrito seguia vivo
+    debajo, listo para revivir con el siguiente "si".
+
+    Con LLM tampoco funcionaba, que es lo que costo mas caro descubrir. La misma
+    frase, "cancela las papas", dio dos resultados en dos ejecuciones: una borro
+    el pedido entero -- hamburguesa incluida -- y la otra contesto "he quitado
+    las Papas" sin tocar el carrito. Distinguir un producto del pedido entero es
+    mirar si lo que nombro esta dentro; no hace falta un modelo, y uno no lo
+    hace fiable.
+    """
+
+    async def can_handle(self, message_data: Dict[str, Any]) -> bool:
+        message = message_data.get("message", "").lower().strip()
+        if not matches_intent(message, "cancel_order"):
+            return False
+
+        # "cancelar mi cita" es de la agenda. El orden de la cadena ya la pone
+        # delante; esto lo deja dicho aqui tambien, para que reordenarla no
+        # convierta una cita cancelada en un pedido borrado.
+        return not matches_intent(message, "cancel_appointment")
+
+    async def handle(self, message_data: Dict[str, Any]) -> Optional[str]:
+        session = message_data.get("session", {}) or {}
+        language = message_data.get("language", DEFAULT_LANGUAGE)
+        session_id = session.get("id")
+
+        estado = estado_pedido.leer(session.get("session_data"))
+        nombrado = que_se_cancela(message_data.get("message", ""))
+
+        # Cancelar el pedido entero.
+        if nombrado is None:
+            if session_id:
+                await self.update_session_state(
+                    session_id, "initial",
+                    estado_pedido.a_session_data(estado_pedido.vaciar(estado)),
+                )
+            return t("order.cancelled", language)
+
+        # Cancelar un producto. Se busca en lo aceptado y en lo propuesto: para
+        # el cliente las dos cosas son "lo que llevo pedido".
+        nuevo, quitadas = estado_pedido.quitar(estado, nombrado)
+        if not quitadas:
+            nuevo, quitadas = estado_pedido.quitar_pendiente(estado, nombrado)
+
+        if not quitadas:
+            # Nombro algo que no tiene. Vaciar aqui seria borrarle el pedido a
+            # quien preguntaba por otra cosa.
+            return t("cart.remove_not_found", language, name=nombrado)
+
+        quitado_texto = ", ".join(l.nombre for l in quitadas)
+
+        if session_id:
+            await self.update_session_state(
+                session_id,
+                "ordering" if not nuevo.vacio else "initial",
+                estado_pedido.a_session_data(nuevo),
+            )
+
+        if nuevo.vacio:
+            return t("cart.removed_now_empty", language, name=quitado_texto)
+
+        return t(
+            "cart.removed", language,
+            name=quitado_texto,
+            items="\n".join(estado_pedido.linea_texto(l) for l in nuevo.carrito or nuevo.pendientes),
+            total=f"{nuevo.total or nuevo.total_pendiente:.2f}",
+        )
+
 
 def normalizar_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
@@ -783,13 +1133,18 @@ class CartConfirmationHandler(BaseWhatsAppHandler):
                 return t("order.process_error", language)
 
             # El carrito ya es un pedido: vaciarlo evita que un segundo "si"
-            # cree el mismo pedido otra vez. El order_id se guarda porque la
-            # postventa lo busca ahi.
+            # cree el mismo pedido otra vez. Se vacia por estado_pedido, que
+            # apaga las siete claves; a mano se apagaban cuatro. El order_id se
+            # guarda porque la postventa lo busca ahi.
             session_id = session.get("id")
             if session_id:
                 await self.update_session_state(
                     session_id, "payment_pending",
-                    {"order_id": pedido.order_id, "cart": [], "cart_id": None, "total": 0},
+                    {
+                        **estado_pedido.a_session_data(estado_pedido.EstadoPedido()),
+                        "order_id": pedido.order_id,
+                        "cart_id": None,
+                    },
                 )
 
             return pedido.mensaje

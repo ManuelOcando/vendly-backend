@@ -187,6 +187,42 @@ INTENT_KEYWORDS: Dict[str, Dict[str, List[str]]] = {
         "en": ["no", "nope", "cancel", "reject", "decline"],
         "pt": ["não", "nao", "cancelar", "rejeitar", "recusar"],
     },
+    # Como termina de pedir la gente. Sin esta intencion, "eso es todo" caia en
+    # ProductOrderHandler -- que acepta casi cualquier texto como nombre de
+    # producto -- y el cliente que cerraba su pedido leia 'No encontre "eso es
+    # todo"'. Nada de una sola palabra corta aqui: estas claves tambien se
+    # comparan por subcadena en _is_deterministic_intent.
+    "finish": {
+        "es": ["eso es todo", "eso seria todo", "nada mas", "solo eso",
+               "listo", "ya termine", "es todo por ahora"],
+        "en": ["that's all", "thats all", "that's it", "thats it",
+               "nothing else", "i'm done", "im done"],
+        "pt": ["isso e tudo", "so isso", "mais nada", "ja terminei"],
+    },
+    # Corregir algo ya pedido, en vez de pedir otro. Es el equivalente
+    # determinista de las `modify_keywords` que _detect_modify_intent lleva
+    # embebidas para la ruta del LLM.
+    #
+    # Deliberadamente **sin** "sin " ni "con ": alli solo se consultan cuando el
+    # producto ya esta en el carrito, y aqui marcarian casi todos los mensajes.
+    # Que "hamburguesa sin salsa" a secas siga añadiendo una linea es la
+    # decision tomada: equivocarse añadiendo de mas se ve en el resumen antes de
+    # confirmar; una correccion tomada por añadido, no.
+    "correction": {
+        "es": ["que sea", "que sean", "la quiero", "lo quiero", "las quiero",
+               "los quiero", "ponle", "ponles", "quitale", "en vez de",
+               "mejor que"],
+        "en": ["make it", "make them", "i want it", "instead of", "change the"],
+        "pt": ["que seja", "que sejam", "quero que", "em vez de", "muda o"],
+    },
+    # Cancelar el pedido entero, distinto de `reject`. Deliberadamente **sin**
+    # "no": el resumen dice "responde *no* para seguir agregando", y confundir
+    # las dos cosas le borraria el pedido a un cliente que solo queria añadir.
+    "cancel_order": {
+        "es": ["cancela", "anular", "olvidalo", "ya no quiero nada"],
+        "en": ["cancel", "forget it", "never mind", "nevermind"],
+        "pt": ["cancela", "esquece", "deixa pra la"],
+    },
     "menu": {
         "es": ["menu", "menú", "catalogo", "catálogo", "ver productos", "productos"],
         "en": ["menu", "catalog", "catalogue", "see products", "show products", "products"],
@@ -284,10 +320,14 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         "en": "Hi! I'm {store_name}'s assistant. How can I help you?",
         "pt": "Olá! Sou o assistente de {store_name}. Como posso ajudar?",
     },
+    # Solo lo que un cliente puede teclear. Aqui ponia 'Escribe
+    # "pedido:TU_CARRO_ID" si vienes de la web': nadie escribe eso a mano, lo
+    # rellena el enlace de la tienda, y CartHandler lo reconoce por el prefijo
+    # sin necesidad de anunciarlo.
     "welcome.options": {
-        "es": '\n\n🛒 *Opciones:*\n• Escribe "menu" para ver nuestros productos\n• Escribe "pedido:TU_CARRO_ID" si vienes de la web\n• Escribe "hola" para empezar',
-        "en": '\n\n🛒 *Options:*\n• Type "menu" to see our products\n• Type "pedido:YOUR_CART_ID" if you came from the website\n• Type "hi" to start',
-        "pt": '\n\n🛒 *Opções:*\n• Escreva "menu" para ver nossos produtos\n• Escreva "pedido:SEU_CARRINHO_ID" se veio do site\n• Escreva "oi" para começar',
+        "es": '\n\n🛒 *Opciones:*\n• Escribe "menu" para ver nuestros productos\n• Escribe el nombre de lo que quieras para pedirlo\n• Escribe "cancelar" para empezar de nuevo',
+        "en": '\n\n🛒 *Options:*\n• Type "menu" to see our products\n• Type the name of what you want to order it\n• Type "cancel" to start over',
+        "pt": '\n\n🛒 *Opções:*\n• Escreva "menu" para ver nossos produtos\n• Escreva o nome do que quiser para pedir\n• Escreva "cancelar" para começar de novo',
     },
     "menu.empty": {
         "es": "No hay productos disponibles en este momento.",
@@ -524,6 +564,15 @@ MESSAGES: Dict[str, Dict[str, str]] = {
         "es": 'Tienes un pedido pendiente de confirmación. Responde *sí* para confirmar o *no* para cancelar.',
         "en": 'You have an order awaiting confirmation. Reply *yes* to confirm or *no* to cancel.',
         "pt": 'Você tem um pedido aguardando confirmação. Responda *sim* para confirmar ou *não* para cancelar.',
+    },
+    # El cliente tiene un pedido a medias, asi que la respuesta por defecto no
+    # puede saludarle como si no existiera. Pasaba con el "no" que el propio
+    # resumen le invita a escribir para seguir agregando: no lo reclamaba
+    # ningun handler y acababa aqui.
+    "bot.ordering_default": {
+        "es": "🛒 *Tu pedido va así:*\n{items}\n\n💰 *Total:* ${total}\n\nDime qué más te agrego, responde *sí* para confirmarlo o escribe *cancelar* para empezar de nuevo.",
+        "en": "🛒 *Your order so far:*\n{items}\n\n💰 *Total:* ${total}\n\nTell me what else to add, reply *yes* to confirm it, or type *cancel* to start over.",
+        "pt": "🛒 *Seu pedido até agora:*\n{items}\n\n💰 *Total:* ${total}\n\nMe diga o que mais adicionar, responda *sim* para confirmar ou escreva *cancelar* para começar de novo.",
     },
     "bot.default_menu": {
         "es": '¡Hola! 👋 ¿En qué puedo ayudarte?\n\n• Escribe "menu" para ver nuestros productos\n• Escribe el nombre de un producto para pedirlo',

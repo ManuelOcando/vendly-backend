@@ -328,6 +328,181 @@ class TestCompleteCustomerJourney:
         assert requests[0]["order_id"] == "order-earlier"
 
 
+class TestLaCadenaDeterministaCierraYCancela:
+    """
+    Cerrar y cancelar hablando, sin LLM.
+
+    La cuota gratuita de Gemini son 20 peticiones al dia, asi que esta cadena
+    no es un plan B: es el bot la mayor parte del tiempo. Tenia que poder
+    llevar una conversacion entera y se rompia justo al final, que es donde
+    esta el pedido.
+    """
+
+    @pytest.mark.asyncio
+    async def test_eso_es_todo_cierra_el_pedido_en_vez_de_buscarlo_en_el_menu(self, journey):
+        """
+        "Eso es todo" es como la gente termina de pedir.
+
+        ProductOrderHandler acepta casi cualquier texto como nombre de
+        producto y era el ultimo de la cadena, asi que el cliente que cerraba
+        su pedido recibia 'No encontre "eso es todo"'.
+        """
+        await journey.say("hola")
+        await journey.say("2 hamburguesas")
+
+        resumen = await journey.say("eso es todo")
+
+        assert "No encontré" not in resumen
+        assert "No pude agregar" not in resumen
+        assert "Hamburguesa" in resumen
+        assert "20.00" in resumen
+
+        # Y el cierre desemboca donde tiene que desembocar: en un pedido.
+        await journey.say("si")
+        pedidos = journey.fake.rows("orders")
+        assert len(pedidos) == 1
+        assert journey.fake.rows("order_items")[0]["quantity"] == 2
+
+    @pytest.mark.asyncio
+    async def test_cancelar_vacia_el_pedido_de_verdad(self, journey):
+        """
+        "cancelar" casa con la intencion `reject`, asi que ProductOrderHandler
+        lo rechazaba y ConfirmationHandler solo actuaba si habia pendientes:
+        nadie lo atendia. El cliente leia el menu generico y su carrito seguia
+        vivo debajo.
+        """
+        await journey.say("hola")
+        await journey.say("2 hamburguesas")
+        assert journey.session()["session_data"]["cart"], "no habia nada que cancelar"
+
+        respuesta = await journey.say("cancelar")
+
+        assert t("order.cancelled", "es") in respuesta
+        assert not journey.session()["session_data"]["cart"]
+        assert journey.session()["current_state"] == "initial"
+
+        # Lo importante: el pedido cancelado no puede resucitar con un "si".
+        await journey.say("si")
+        assert journey.fake.rows("orders") == []
+
+    @pytest.mark.asyncio
+    async def test_un_no_al_resumen_no_deja_al_cliente_sin_respuesta(self, journey):
+        """
+        El resumen dice "responde *no* para seguir agregando", y ese "no" no lo
+        reclamaba nadie: caia en la respuesta por defecto, que saluda como si
+        el carrito no existiera.
+        """
+        await journey.say("hola")
+        await journey.say("2 hamburguesas")
+
+        respuesta = await journey.say("no")
+
+        assert t("bot.default_menu", "es") not in respuesta
+        assert "Hamburguesa" in respuesta
+        # ...y el carrito sigue donde estaba: "no" no es "cancelar".
+        assert journey.session()["session_data"]["cart"]
+
+    @pytest.mark.asyncio
+    async def test_lo_que_se_pide_cambiar_llega_hasta_la_cocina(self, journey):
+        """
+        El recorrido entero de una modificacion, sin LLM: del mensaje a
+        `order_items.modifications`.
+
+        No fallaba: mentia. "hamburguesa sin cebolla" casaba con "Hamburguesa"
+        por contencion, el bot contestaba `✅ Hamburguesa` y el cliente lo daba
+        por bueno. Lo que salia de la cocina llevaba cebolla, y no habia ni un
+        error en los logs que lo explicara.
+        """
+        await journey.say("hola")
+
+        acuse = await journey.say("quiero 2 hamburguesas sin cebolla")
+        assert "sin cebolla" in acuse, "el cliente confirma algo que no puede revisar"
+
+        await journey.say("eso es todo")
+        await journey.say("si")
+
+        # La fila que lee la cocina. Que el aviso al vendedor tambien las lleva
+        # lo fija test_modificaciones_llegan_a_la_cocina.py.
+        [linea] = journey.fake.rows("order_items")
+        assert linea["item_name"] == "Hamburguesa"
+        assert linea["quantity"] == 2
+        assert linea["modifications"] == ["sin cebolla"]
+
+    @pytest.mark.asyncio
+    async def test_corregir_el_pedido_no_lo_duplica(self, journey):
+        """
+        El fallo aparecio al agotarse la cuota de Gemini, cuando esta cadena
+        paso a contestar sola: "la hamburguesa que sea sin salsa" añadia una
+        segunda hamburguesa en vez de corregir la que habia. Dos platos en la
+        cocina y el cliente pagando el que no pidio.
+        """
+        await journey.say("hola")
+        await journey.say("una hamburguesa sin cebolla")
+
+        await journey.say("la hamburguesa que sea sin salsa")
+        await journey.say("eso es todo")
+        await journey.say("si")
+
+        lineas = journey.fake.rows("order_items")
+        assert len(lineas) == 1, f"el pedido llevo {len(lineas)} lineas en vez de una"
+        assert lineas[0]["quantity"] == 1
+        assert lineas[0]["modifications"] == ["sin cebolla", "sin salsa"]
+        assert journey.fake.rows("orders")[0]["total"] == 10.0, "se cobro de mas"
+
+    @pytest.mark.asyncio
+    async def test_ponle_queso_llega_a_la_cocina(self, journey):
+        """
+        La modificacion va suelta, sin `sin `/`con ` que diga donde empieza, y
+        se perdia entera: se añadia una hamburguesa pelada y el queso no
+        llegaba a ninguna parte.
+        """
+        await journey.say("hola")
+        await journey.say("una hamburguesa sin cebolla")
+
+        await journey.say("ponle queso a la hamburguesa")
+        await journey.say("eso es todo")
+        await journey.say("si")
+
+        [linea] = journey.fake.rows("order_items")
+        assert linea["modifications"] == ["sin cebolla", "con queso"]
+        assert linea["quantity"] == 1
+        assert journey.fake.rows("orders")[0]["total"] == 10.0, "se cobro de mas"
+
+    @pytest.mark.asyncio
+    async def test_dos_modificaciones_partidas_por_el_separador(self, journey):
+        """
+        " y " separa productos, asi que esto llegaba partido en dos y el
+        segundo trozo no existe en ningun catalogo: 'No encontre "sin
+        mayonesa"', y la mayonesa puesta.
+        """
+        await journey.say("hola")
+
+        acuse = await journey.say("una hamburguesa sin cebolla y sin mayonesa")
+
+        assert "No encontré" not in acuse
+        carrito = journey.session()["session_data"]["cart"]
+        assert len(carrito) == 1, "la modificacion se conto como otro producto"
+        assert carrito[0]["modifications"] == ["sin cebolla", "sin mayonesa"]
+
+    @pytest.mark.asyncio
+    async def test_cancelar_una_cita_no_lo_reclama_el_pedido(self, journey):
+        """
+        "cancelar mi cita" contiene "cancelar". Quien lo atiende tiene que
+        seguir siendo la agenda, y eso depende del orden de la cadena, no de
+        las palabras clave.
+        """
+        from services.whatsapp.handlers import ServiceSchedulingHandler
+        from services.whatsapp.handlers.customer import CancelarPedidoHandler
+
+        orden = []
+        handler = journey.bot.fallback_chain
+        while handler is not None:
+            orden.append(type(handler))
+            handler = handler.next_handler
+
+        assert orden.index(ServiceSchedulingHandler) < orden.index(CancelarPedidoHandler)
+
+
 class TestTierRestrictions:
     """Requirements 16.1/16.2 - the freemium split, read from the tenant's
     real tenant_subscriptions row rather than a mocked feature check."""

@@ -236,6 +236,85 @@ def quitar(estado: EstadoPedido, nombre: str) -> Tuple[EstadoPedido, Tuple[Linea
     return estado._replace(carrito=tuple(quedan)), tuple(quitadas)
 
 
+def quitar_pendiente(
+    estado: EstadoPedido, nombre: str
+) -> Tuple[EstadoPedido, Tuple[Linea, ...]]:
+    """
+    Como `quitar`, pero sobre lo que aun espera confirmacion.
+
+    Para el cliente no hay dos montones: lo que acaba de pedir es "lo que
+    llevo", este aceptado o propuesto. Si cancela algo que todavia estaba en la
+    propuesta, tiene que desaparecer igual.
+    """
+    buscado = (nombre or "").strip().lower()
+    if not buscado:
+        return estado, ()
+
+    quedan, quitadas = [], []
+    for linea in estado.pendientes:
+        actual = linea.nombre.lower()
+        if buscado in actual or actual in buscado:
+            quitadas.append(linea)
+        else:
+            quedan.append(linea)
+
+    nuevo = estado._replace(pendientes=tuple(quedan))
+    if not nuevo.pendientes:
+        nuevo = nuevo._replace(esperando_confirmacion=False)
+
+    return nuevo, tuple(quitadas)
+
+
+def modificar(
+    estado: EstadoPedido, nombre: str, modificaciones: Any
+) -> Tuple[EstadoPedido, Optional[Linea]]:
+    """
+    Añade modificaciones a la primera linea del carrito que case con `nombre`.
+
+    "La hamburguesa la quiero sin salsa", cuando la hamburguesa ya esta pedida.
+    Vivia suelto dentro del handler del LLM, que fusionaba con `set()` -- el
+    orden de "sin cebolla, sin salsa" cambiaba entre mensajes -- y guardaba el
+    carrito a trozos, dejando los pendientes vivos debajo.
+
+    Busca en el carrito y, si no encuentra, **en los pendientes**: corregir algo
+    que el bot acaba de proponer es lo mas normal del mundo, y mirando solo el
+    carrito se trataba como un producto nuevo. En vivo: pidio 2 hamburguesas sin
+    cebolla, dijo "que sea sin salsa tambien", y acabo con 3 hamburguesas.
+
+    Misma coincidencia por contencion en los dos sentidos que `quitar`.
+    Devuelve (estado, linea) o (estado, None) si ninguna casaba.
+    """
+    buscado = (nombre or "").strip().lower()
+    nuevas = [str(m).strip() for m in (modificaciones or []) if str(m).strip()]
+    if not buscado or not nuevas:
+        return estado, None
+
+    def _aplicar(lineas: Tuple[Linea, ...]):
+        candidatas = list(lineas)
+        for i, linea in enumerate(candidatas):
+            actual = linea.nombre.lower()
+            if buscado in actual or actual in buscado:
+                # Sin duplicados, y en el orden en que las pidio el cliente: es
+                # lo que se le enseña de vuelta y lo que lee la cocina.
+                fusionadas = list(linea.modificaciones)
+                for m in nuevas:
+                    if m not in fusionadas:
+                        fusionadas.append(m)
+                candidatas[i] = linea._replace(modificaciones=tuple(fusionadas))
+                return tuple(candidatas), candidatas[i]
+        return None, None
+
+    carrito, tocada = _aplicar(estado.carrito)
+    if tocada:
+        return estado._replace(carrito=carrito), tocada
+
+    pendientes, tocada = _aplicar(estado.pendientes)
+    if tocada:
+        return estado._replace(pendientes=pendientes), tocada
+
+    return estado, None
+
+
 # --------------------------------------------------------------------------
 # Escritura
 # --------------------------------------------------------------------------
@@ -249,6 +328,21 @@ def _a_dict(linea: Linea) -> Dict[str, Any]:
         "quantity": linea.cantidad,
         "modifications": list(linea.modificaciones),
     }
+
+
+def en_curso(estado: EstadoPedido) -> List[Dict[str, Any]]:
+    """
+    Todo lo que el cliente cree que lleva pedido: lo aceptado y lo propuesto.
+
+    Los dos montones existen por como funciona el LLM -- que elige por su cuenta
+    entre proponer y añadir directo -- no por como piensa quien esta pidiendo.
+    Para el cliente hay un solo pedido, y cuando se le pregunta al modelo o se
+    mira "que lleva", es esto y no solo el carrito.
+
+    Al prompt entraba solo `cart`, asi que un pedido recien propuesto se le
+    enseñaba al modelo como un carrito vacio.
+    """
+    return [_a_dict(l) for l in estado.carrito + estado.pendientes]
 
 
 def linea_texto(linea: Any) -> str:

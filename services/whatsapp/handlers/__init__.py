@@ -6,8 +6,9 @@ Chain of Responsibility pattern.
 """
 from .base import MessageHandler, BaseWhatsAppHandler
 from .customer import (
-    WelcomeHandler, MenuHandler, ProductOrderHandler, 
-    ConfirmationHandler, CartHandler, CartConfirmationHandler
+    WelcomeHandler, MenuHandler, ProductOrderHandler,
+    ConfirmationHandler, CartHandler, CartConfirmationHandler,
+    CierreDePedidoHandler, CancelarPedidoHandler
 )
 from .seller import SellerMenuHandler
 from .llm_handler import LLMHandler
@@ -27,6 +28,8 @@ __all__ = [
     "ConfirmationHandler",
     "CartHandler",
     "CartConfirmationHandler",
+    "CierreDePedidoHandler",
+    "CancelarPedidoHandler",
     
     # Seller handlers
     "SellerMenuHandler",

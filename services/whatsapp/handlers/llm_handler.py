@@ -12,6 +12,9 @@ from services.bot_personalities import resolve_personality
 from services.llm import get_llm_provider, LLMProvider
 from services.i18n import DEFAULT_LANGUAGE, matches_intent, t
 from services.whatsapp import estado_pedido
+# Vivian aqui dentro; las necesita tambien la cadena determinista, que no puede
+# importar del handler del LLM sin invertir la direccion de la dependencia.
+from services.whatsapp.modificaciones import parece_modificacion
 from services.llm import salud as salud_llm
 from config import get_settings
 from utils.log_privacy import preview, tel
@@ -29,6 +32,18 @@ DETERMINISTIC_INTENTS = (
     # order status ("mi pedido" alone is deliberately excluded - too broad,
     # would hijack normal LLM shopping conversation like "agregar a mi pedido")
     "order_status", "return", "change", "booking", "cancel_appointment",
+    # "eso es todo" no necesita un modelo para entenderse, y el plan gratuito
+    # de Gemini son 20 peticiones al dia: gastarlas en cerrar un pedido es
+    # gastarlas en lo que la cadena determinista ya hace bien.
+    "finish",
+    # `cancel_order` se dejo fuera un dia, apostando a que el modelo
+    # distinguiria "cancela la hamburguesa" de "cancela el pedido". Probandolo
+    # de verdad, la misma frase dio dos resultados distintos en dos
+    # ejecuciones: una dijo "he quitado las Papas" sin tocar el carrito, y la
+    # otra borro el pedido entero. Ninguna hizo lo que se le pidio, y las dos
+    # se lo confirmaron al cliente. Cancelar no es una decision que necesite un
+    # modelo: es mirar si lo que nombro esta en el carrito.
+    "cancel_order",
 )
 
 
@@ -49,20 +64,6 @@ def _linea_de_producto(producto: Dict[str, Any]) -> str:
     cantidad = producto.get("quantity", 1)
     subtotal = producto.get("price", 0) * cantidad
     return f"• {producto.get('name', '')}{detalle} x{cantidad} - ${subtotal:.2f}"
-
-
-# Como empieza una modificacion en los tres idiomas. Un "producto" que empieza
-# asi no es un producto: es lo que hay que hacerle al anterior.
-_INICIOS_DE_MODIFICACION = (
-    "sin ", "con ", "extra ", "sem ", "com ",
-    "without ", "with ", "no ", "add ", "hold the ",
-)
-
-
-def parece_modificacion(nombre: str) -> bool:
-    """Si este 'producto' es en realidad una modificacion del anterior."""
-    limpio = (nombre or "").strip().lower()
-    return limpio.startswith(_INICIOS_DE_MODIFICACION)
 
 
 def reasignar_modificaciones(
@@ -199,6 +200,15 @@ class LLMHandler(BaseWhatsAppHandler):
             current_cart = session_data.get("cart", [])
             current_state = session.get("current_state", "initial")
             logger.info(f"🛒 Current cart: {len(current_cart)} items, State: {current_state}")
+
+            # Lo que el cliente cree que lleva pedido: lo aceptado **y** lo que
+            # el bot acaba de proponerle. El el prompt solo entraba `cart`, asi
+            # que cuando el modelo proponia productos -- que quedan en
+            # `pending_products` -- se le enseñaba un carrito vacio y se le
+            # pedia que razonara sobre un pedido que no podia ver. De ahi que
+            # "que sea sin salsa tambien" añadiera una tercera hamburguesa en
+            # vez de corregir las dos que habia propuesto el turno anterior.
+            pedido_en_curso = estado_pedido.en_curso(estado_pedido.leer(session_data))
             
             # Get conversation history
             conversation_history = session_data.get("history", [])
@@ -233,7 +243,7 @@ class LLMHandler(BaseWhatsAppHandler):
             
             logger.info("📝 Building context prompt...")
             context_prompt = provider.build_context_prompt(
-                current_cart=current_cart,
+                current_cart=pedido_en_curso,
                 conversation_history=conversation_history,
                 current_state=current_state
             )
@@ -288,12 +298,12 @@ class LLMHandler(BaseWhatsAppHandler):
             products = llm_response.get("products", [])
             
             # Check if this is a modification to existing cart item (not adding new)
-            is_modify_intent = self._detect_modify_intent(user_message, products, current_cart)
+            is_modify_intent = self._detect_modify_intent(user_message, products, pedido_en_curso)
             
             if is_modify_intent:
                 logger.info(f"🔄 Handling as MODIFY existing cart item (not add)")
                 return await self._handle_modify_cart_item(
-                    products, response_text, session, tenant_id, phone, current_cart, language
+                    products, response_text, session, tenant_id, phone, language
                 )
             
             # Check if any product requires confirmation
@@ -472,8 +482,11 @@ class LLMHandler(BaseWhatsAppHandler):
             estado_pedido.leer(session.get("session_data")), nuevos
         )
 
+        # `ordering`, no "awaiting_confirmation": lo que espera confirmacion es
+        # una clave de session_data, no un estado, y nadie leia ese nombre. Ver
+        # el comentario de _handle_confirm_order.
         await self.update_session_state(
-            session_id, "awaiting_confirmation", estado_pedido.a_session_data(estado)
+            session_id, "ordering", estado_pedido.a_session_data(estado)
         )
 
         # El mensaje enseña el pedido entero, no solo lo ultimo añadido: es lo
@@ -646,22 +659,35 @@ class LLMHandler(BaseWhatsAppHandler):
         language: str = DEFAULT_LANGUAGE
     ) -> str:
         """Handle order confirmation"""
-        if not current_cart:
+        # Lo pendiente pasa al carrito antes de enseñar el resumen. Sin esto se
+        # le enseñaba al cliente un pedido que incluia lo propuesto, y el "si"
+        # siguiente lo creaba desde session_data["cart"], que no lo lleva:
+        # confirmaba un resumen y recibia otro. Es lo mismo que hace
+        # CierreDePedidoHandler con "eso es todo", y por el mismo motivo.
+        estado = estado_pedido.confirmar(
+            estado_pedido.leer(session.get("session_data"))
+        )
+
+        if not estado.carrito:
             return t("cart.empty", language)
-        
-        # Transition to confirming state
+
+        # `ordering`, no "confirming". "confirming" era un estado que escribia
+        # solo esta rama y no leia nadie: CartConfirmationHandler -- el unico
+        # sitio que inserta en `orders` -- acepta `viewing_cart` u `ordering`.
+        # Asi que el cliente que decia "confirmar mi pedido" y luego "si" caia
+        # justo en el hueco que el enrutado por estado existe para tapar: su
+        # "si" llegaba suelto al modelo, o al menu generico con el LLM caido.
         session_id = session.get("id")
         if session_id:
-            await self.update_session_state(session_id, "confirming", session.get("session_data", {}))
-        
-        cart_text = "\n".join([
-            f"• {item['name']} x{item['quantity']} - ${item['price'] * item['quantity']:.2f}"
-            for item in current_cart
-        ])
-        
-        total = sum(item["price"] * item["quantity"] for item in current_cart)
-        
-        return t("order.summary", language, items=cart_text, total=f"{total:.2f}")
+            await self.update_session_state(
+                session_id, "ordering", estado_pedido.a_session_data(estado)
+            )
+
+        return t(
+            "order.summary", language,
+            items="\n".join(estado_pedido.linea_texto(l) for l in estado.carrito),
+            total=f"{estado.total:.2f}",
+        )
     
     async def _handle_cancel(
         self, response_text: str, session: Dict[str, Any], language: str = DEFAULT_LANGUAGE
@@ -691,53 +717,38 @@ class LLMHandler(BaseWhatsAppHandler):
         session: Dict[str, Any],
         tenant_id: str,
         phone: str,
-        current_cart: List[Dict[str, Any]],
         language: str = DEFAULT_LANGUAGE
     ):
         """
         Handle modification of existing cart items (not adding new ones)
         When user says "la hamburguesa la quiero sin salsa" after order is in cart
+
+        El carrito se lee de la sesion, no del `current_cart` que traia antes
+        por parametro: eran dos copias de lo mismo y esta rama modificaba la
+        suya en el sitio, asi que lo que se guardaba dependia de cual llegara.
         """
         session_id = session.get("id")
         
         if not products:
             return response_text or t("llm.what_to_modify", language)
         
-        modified_count = 0
+        estado = estado_pedido.leer(session.get("session_data"))
         modification_details = []
-        
+
         for product in products:
-            product_name = product.get("name", "").lower()
-            modifications = product.get("modifications", [])
-            
-            # Find matching item in cart
-            for item in current_cart:
-                item_name = item.get("name", "").lower()
-                # Match by product name (partial match allowed)
-                if product_name in item_name or item_name in product_name:
-                    # Apply modifications
-                    old_mods = item.get("modifications", [])
-                    item["modifications"] = list(set(old_mods + modifications))  # Merge without duplicates
-                    modified_count += 1
-                    modification_details.append(f"{item.get('name')} ({', '.join(item['modifications'])})")
-                    break
-        
-        # Calculate new total
-        total = sum(
-            item.get("price", 0) * item.get("quantity", 1) 
-            for item in current_cart
-        )
-        
-        # Build cart summary
-        cart_summary = "\n".join([
-            f"• {item.get('name')}"
-            + (f" ({', '.join(item.get('modifications', []))})" if item.get('modifications') else "")
-            + f" x{item.get('quantity', 1)}"
-            for item in current_cart
-        ])
-        
+            estado, modificada = estado_pedido.modificar(
+                estado, product.get("name", ""), product.get("modifications", [])
+            )
+            if modificada:
+                modification_details.append(
+                    f"{modificada.nombre} ({', '.join(modificada.modificaciones)})"
+                )
+
+        cart_summary = "\n".join(estado_pedido.linea_texto(l) for l in estado.carrito)
+        total = estado.total
+
         # Response
-        if modified_count > 0:
+        if modification_details:
             response = t(
                 "llm.modified", language,
                 details=", ".join(modification_details),
@@ -748,15 +759,22 @@ class LLMHandler(BaseWhatsAppHandler):
                 "llm.not_in_cart", language,
                 items=cart_summary, total=f"{total:.2f}",
             )
-        
-        # Update session
+
+        # Update session. `ordering`, no "cart_review": era el tercer estado
+        # que no leia nadie, y el mas caro de los tres, porque corregir el
+        # pedido es lo que mas hace la gente pidiendo comida. Quien decia "la
+        # hamburguesa sin salsa" y luego "si" no podia cerrar su pedido:
+        # CartConfirmationHandler no reconoce ese estado.
         if session_id:
-            await self.update_session_state(session_id, "cart_review", {
-                "cart": current_cart,
-                "total": total
-            })
-            await self._update_history(session, f"modificar {product_name}", response)
-        
+            await self.update_session_state(
+                session_id, "ordering", estado_pedido.a_session_data(estado)
+            )
+            await self._update_history(
+                session,
+                f"modificar {products[0].get('name', '')}",
+                response,
+            )
+
         return response
     
     async def _update_history(
