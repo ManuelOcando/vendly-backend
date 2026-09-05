@@ -11,6 +11,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 import logging
 
+from db.sesion import merge_session_data
 from db.supabase import get_supabase_client
 from db.whatsapp_config import fetch_config
 from services.whatsapp.meta_service import MetaWhatsAppService
@@ -183,10 +184,10 @@ class PostSaleService:
 
             if session_result.data:
                 session = session_result.data[0]
-                session_data["awaiting_satisfaction_for"] = request["id"]
-                self.db.table("conversation_sessions").update({
-                    "session_data": session_data
-                }).eq("id", session["id"]).execute()
+                merge_session_data(
+                    self.db, session["id"],
+                    patch={"awaiting_satisfaction_for": request["id"]},
+                )
         except Exception as e:
             logger.error("Could not request satisfaction rating from %s: %s", tel(customer_phone), e, exc_info=True)
 

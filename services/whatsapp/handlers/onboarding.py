@@ -12,6 +12,7 @@ import re
 from datetime import datetime
 
 from .base import BaseWhatsAppHandler
+from db.sesion import merge_session_data
 from services.bot_personalities import PRESETS, default_preset_for_industry, preset_names
 from services.multi_tenant_orchestrator import MultiTenantOrchestrator
 from services.offline_mode_service import OfflineModeService, parse_weekly_schedule
@@ -777,14 +778,7 @@ Escribe "configurar" para comenzar."""
             ).eq("customer_phone", phone).limit(1).execute()
             
             if session_result.data:
-                session_id = session_result.data[0]["id"]
-                current_data = session_result.data[0].get("session_data", {}) or {}
-                current_data.update(data)
-                
-                self.db.table("conversation_sessions").update({
-                    "session_data": current_data,
-                    "updated_at": datetime.now().isoformat()
-                }).eq("id", session_id).execute()
+                merge_session_data(self.db, session_result.data[0]["id"], patch=data)
         except Exception as e:
             logger.error(f"Error updating session data: {e}")
 

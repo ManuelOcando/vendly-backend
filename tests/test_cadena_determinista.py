@@ -349,6 +349,57 @@ class TestElModeloVeElPedidoEntero:
         )
 
 
+
+class TestLoQueSeDiceQuedaGuardado:
+    """
+    Lo que el bot dice haber hecho tiene que seguir en la base **cuando el turno
+    ha terminado entero**, no solo justo despues de escribirlo.
+
+    Sin esto, un turno podia guardar la correccion y pisarla dos lineas mas
+    abajo. Es lo que hacia `_update_history`: reescribia session_data entero
+    desde la copia leida al empezar el turno. El cliente leia "Modificado" y a
+    la cocina llegaba el pedido sin corregir.
+    """
+
+    @pytest.mark.asyncio
+    async def test_la_correccion_sobrevive_al_guardado_del_historial(self):
+        import copy
+
+        from tests.fake_supabase import seed_tenant
+
+        fake = seed_tenant()
+        fila = {
+            "id": "sess-1", "tenant_id": "t", "customer_phone": "+1",
+            "current_state": "ordering",
+            "session_data": estado_pedido.a_session_data(
+                estado_pedido.añadir(estado_pedido.EstadoPedido(), CARRITO)
+            ),
+        }
+        fake.insert_row("conversation_sessions", fila)
+
+        # Copia, como en produccion: la sesion se lee al empezar el turno y es
+        # un objeto distinto del que vive en la base. Pasando la fila viva, el
+        # pisoton es invisible -- sesion y base serian lo mismo.
+        sesion = copy.deepcopy(fila)
+
+        llm = LLMHandler(fake)
+        respuesta = await llm._handle_modify_cart_item(
+            [{"name": "Hamburguesa", "modifications": ["sin salsa"]}],
+            "", sesion, "t", "+1", "es",
+        )
+        assert "sin salsa" in respuesta
+
+        guardado = next(
+            r for r in fake.rows("conversation_sessions") if r["id"] == "sess-1"
+        )["session_data"]
+
+        assert guardado["cart"][0]["modifications"] == ["sin salsa"], (
+            "el bot dijo que lo modifico y en la base no esta: algo del mismo "
+            "turno lo piso"
+        )
+        assert guardado.get("history"), "el historial tambien tenia que guardarse"
+
+
 class TestQuienReclamaCadaPalabra:
     """Las fronteras entre handlers que se pisan las palabras clave."""
 

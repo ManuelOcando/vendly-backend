@@ -783,28 +783,28 @@ class LLMHandler(BaseWhatsAppHandler):
         user_message: str,
         bot_response: str
     ):
-        """Update conversation history in session"""
+        """
+        Añade los dos mensajes del turno al historial.
+
+        Guarda **solo** la clave `history`. Antes cogia la copia de
+        session_data leida al empezar el turno, le pegaba el historial y
+        reescribia la columna entera con un update crudo -- asi que se comia
+        todo lo que el propio turno acababa de guardar. En vivo: el bot decia
+        "Modificado: hamburguesa (sin cebolla, sin salsa)" y a la cocina
+        llegaba sin la salsa quitada, porque esta funcion corria despues y
+        devolvia el carrito a como estaba.
+
+        Se lee el historial de la base, no de la sesion en memoria, por lo
+        mismo: la copia en memoria es de antes del turno.
+        """
         session_id = session.get("id")
         if not session_id:
             return
-        
-        session_data = session.get("session_data", {}) or {}
-        history = session_data.get("history", [])
-        
-        # Add new messages
-        history.append({"role": "user", "content": user_message, "timestamp": datetime.now().isoformat()})
-        history.append({"role": "assistant", "content": bot_response, "timestamp": datetime.now().isoformat()})
-        
+
+        ahora = datetime.now().isoformat()
+        history = list(self._read_session_data(session_id).get("history") or [])
+        history.append({"role": "user", "content": user_message, "timestamp": ahora})
+        history.append({"role": "assistant", "content": bot_response, "timestamp": ahora})
+
         # Keep last 20 messages (10 exchanges)
-        history = history[-20:]
-        
-        session_data["history"] = history
-        
-        # Update without changing state
-        try:
-            self.db.table("conversation_sessions").update({
-                "session_data": session_data,
-                "updated_at": datetime.now().isoformat()
-            }).eq("id", session_id).execute()
-        except Exception as e:
-            logger.error(f"Error updating history: {e}")
+        await self.update_session_state(session_id, data={"history": history[-20:]})

@@ -9,6 +9,7 @@ from datetime import datetime
 
 from db.supabase import get_supabase_client
 from db.whatsapp_config import fetch_config
+from db.sesion import merge_session_data, read_session_data
 from services.whatsapp.handlers import (
     MenuHandler, WelcomeHandler, ProductOrderHandler, ConfirmationHandler,
     CartHandler, CartConfirmationHandler, SellerMenuHandler, LLMHandler,
@@ -307,9 +308,7 @@ class MetaWhatsAppBotService:
             # sesion mas abajo y deben ver el idioma ya resuelto.
             session["session_data"] = session_data
 
-            self.db.table("conversation_sessions").update({
-                "session_data": session_data
-            }).eq("id", session_id).execute()
+            merge_session_data(self.db, session_id, patch={"language": language})
         except Exception as e:
             logger.error(f"Could not persist language for session {session_id}: {e}", exc_info=True)
 
@@ -340,16 +339,12 @@ class MetaWhatsAppBotService:
 
             session_id = session.get("id")
             if session_id:
-                result = self.db.table("conversation_sessions").select(
-                    "session_data"
-                ).eq("id", session_id).limit(1).execute()
-                stored = (result.data[0].get("session_data") or {}) if result.data else {}
+                stored = read_session_data(self.db, session_id)
                 if stored.get("translation_notice_sent"):
                     return response
-                stored["translation_notice_sent"] = True
-                self.db.table("conversation_sessions").update({
-                    "session_data": stored
-                }).eq("id", session_id).execute()
+                merge_session_data(
+                    self.db, session_id, patch={"translation_notice_sent": True}
+                )
 
             return response + t("translation.notice", language)
         except Exception as e:

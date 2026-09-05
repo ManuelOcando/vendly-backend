@@ -7,6 +7,7 @@ import logging
 from datetime import datetime
 
 from db.whatsapp_config import fetch_config
+from db.sesion import merge_session_data, read_session_data
 
 logger = logging.getLogger(__name__)
 
@@ -83,34 +84,23 @@ class BaseWhatsAppHandler(MessageHandler):
             logger.error(f"Error managing session: {e}")
             return {}
     
-    async def update_session_state(self, session_id: str, state: str, data: Dict = None):
+    async def update_session_state(self, session_id: str, state: str = None, data: Dict = None):
         """Update session state, merging `data` into the existing session_data.
 
         Merges rather than replaces: callers pass partial dicts (just
         {"cart": ...} or {"cart_id": ...}), and a straight overwrite used to
         wipe every other key - conversation history, detected language, a
         pending satisfaction rating - depending on which handler wrote last.
-        """
-        try:
-            update_data = {
-                "current_state": state,
-                "updated_at": datetime.now().isoformat()
-            }
-            if data:
-                update_data["session_data"] = {**self._read_session_data(session_id), **data}
 
-            self.db.table("conversation_sessions").update(update_data).eq("id", session_id).execute()
-        except Exception as e:
-            logger.error(f"Error updating session: {e}")
+        `state` es opcional: guardar solo un trozo de session_data no tiene por
+        que mover el estado de la conversacion. Sin eso, _update_history se
+        escribia la columna entera por su cuenta y se comia lo que el turno
+        acababa de guardar.
+
+        La fusion vive en db/sesion.py, que es su unico dueño.
+        """
+        merge_session_data(self.db, session_id, patch=data, state=state)
 
     def _read_session_data(self, session_id: str) -> Dict:
         """Current session_data for a session, or {} if unavailable."""
-        try:
-            result = self.db.table("conversation_sessions").select(
-                "session_data"
-            ).eq("id", session_id).limit(1).execute()
-            if result.data:
-                return result.data[0].get("session_data") or {}
-        except Exception as e:
-            logger.error(f"Could not read session_data for {session_id}: {e}", exc_info=True)
-        return {}
+        return read_session_data(self.db, session_id)
