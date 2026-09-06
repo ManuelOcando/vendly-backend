@@ -170,11 +170,21 @@ def que_se_cancela(mensaje: str) -> Optional[str]:
     veces se lo confirmo al cliente.
     """
     palabras = _palabras_restantes(mensaje, "cancel_order")
+    return " ".join(palabras) if palabras else None
 
-    if not palabras or all(p in _EL_PEDIDO_ENTERO for p in palabras):
-        return None
 
-    return " ".join(palabras)
+def menciona_el_pedido_entero(mensaje: str) -> bool:
+    """
+    Si el cliente nombra el pedido como un todo: "cancela **todo**", "cancelar
+    mi **pedido**", "quiero cancelar todo y comenzar de nuevo la **orden**".
+
+    Basta con **una** de esas palabras. Antes se exigia que lo fueran *todas*
+    las que sobraban, y cualquier cortesia rompia la regla: "quiero cancelar mi
+    pedido" dejaba "quiero pedido", que no son todas, asi que pasaba por nombre
+    de producto y el cliente leia 'No encontre "quiero pedido" en tu carrito'.
+    Fallaba hasta la frase canonica. Visto en produccion el 05/09.
+    """
+    return any(p in _EL_PEDIDO_ENTERO for p in _palabras_restantes(mensaje, "cancel_order"))
 
 
 def modificacion_suelta(mensaje: str, nombre_producto: str = "") -> List[str]:
@@ -225,11 +235,16 @@ class WelcomeHandler(BaseWhatsAppHandler):
     """Handles welcome messages and greetings"""
     
     async def can_handle(self, message_data: Dict[str, Any]) -> bool:
-        """Check if message is a greeting"""
+        """
+        Un saludo se saluda, este la conversacion donde este.
+
+        Exigia el estado `initial`, asi que un cliente que volvia con un pedido
+        a medias no recibia saludo: su "hola" caia en la respuesta por defecto
+        y lo que leia era el volcado del pedido pendiente, sin mas. Visto en
+        produccion el 05/09.
+        """
         message = message_data.get("message", "").lower().strip()
-        state = message_data.get("session", {}).get("current_state", "initial")
-        
-        return state == "initial" and matches_intent(message, "greeting")
+        return matches_intent(message, "greeting")
     
     async def handle(self, message_data: Dict[str, Any]) -> Optional[str]:
         """Handle greeting message"""
@@ -245,13 +260,28 @@ class WelcomeHandler(BaseWhatsAppHandler):
         else:
             message = t("welcome.default", language, store_name=tenant_name)
 
-        message += t("welcome.options", language)
-        
-        # Update session state
-        session_id = message_data.get("session", {}).get("id")
-        if session_id:
+        sesion = message_data.get("session", {}) or {}
+        estado = estado_pedido.leer(sesion.get("session_data"))
+        lineas = estado.carrito or estado.pendientes
+
+        if lineas:
+            # Saluda **y** le enseña lo que lleva, en vez de solo lo segundo.
+            message += "\n\n" + t(
+                "bot.ordering_default", language,
+                items="\n".join(estado_pedido.linea_texto(l) for l in lineas),
+                total=f"{estado.total or estado.total_pendiente:.2f}",
+            )
+        else:
+            message += t("welcome.options", language)
+
+        # El estado solo se toca si ya era `initial`. Escribirlo con la
+        # conversacion en `ordering` o `viewing_cart` dejaria al "si" siguiente
+        # sin poder cerrar el pedido: CartConfirmationHandler solo acepta esos
+        # dos estados.
+        session_id = sesion.get("id")
+        if session_id and sesion.get("current_state", "initial") == "initial":
             await self.update_session_state(session_id, "initial")
-        
+
         return message
 
 class MenuHandler(BaseWhatsAppHandler):
@@ -737,11 +767,11 @@ class CancelarPedidoHandler(BaseWhatsAppHandler):
         language = message_data.get("language", DEFAULT_LANGUAGE)
         session_id = session.get("id")
 
+        mensaje = message_data.get("message", "")
         estado = estado_pedido.leer(session.get("session_data"))
-        nombrado = que_se_cancela(message_data.get("message", ""))
+        nombrado = que_se_cancela(mensaje)
 
-        # Cancelar el pedido entero.
-        if nombrado is None:
+        async def vaciar_todo():
             if session_id:
                 await self.update_session_state(
                     session_id, "initial",
@@ -749,15 +779,26 @@ class CancelarPedidoHandler(BaseWhatsAppHandler):
                 )
             return t("order.cancelled", language)
 
-        # Cancelar un producto. Se busca en lo aceptado y en lo propuesto: para
-        # el cliente las dos cosas son "lo que llevo pedido".
+        # "cancelar" a secas: no nombra nada, se va todo.
+        if nombrado is None:
+            return await vaciar_todo()
+
+        # Se le pregunta primero al carrito, no a una lista de palabras.
+        # "Cancela las papas del pedido" lleva la palabra `pedido`, pero nombra
+        # un producto real: quitar una linea es recuperable, vaciar el pedido
+        # no. Se busca en lo aceptado y en lo propuesto, que para el cliente
+        # son la misma cosa.
         nuevo, quitadas = estado_pedido.quitar(estado, nombrado)
         if not quitadas:
             nuevo, quitadas = estado_pedido.quitar_pendiente(estado, nombrado)
 
         if not quitadas:
-            # Nombro algo que no tiene. Vaciar aqui seria borrarle el pedido a
-            # quien preguntaba por otra cosa.
+            # No nombra nada del carrito. Si habla del pedido como un todo
+            # ("quiero cancelar todo y comenzar de nuevo la orden"), se vacia.
+            if menciona_el_pedido_entero(mensaje):
+                return await vaciar_todo()
+            # Y si no, nombro algo que no tiene: vaciar aqui seria borrarle el
+            # pedido a quien preguntaba por otra cosa.
             return t("cart.remove_not_found", language, name=nombrado)
 
         quitado_texto = ", ".join(l.nombre for l in quitadas)

@@ -20,6 +20,7 @@ from services.whatsapp import estado_pedido
 from services.whatsapp.handlers.customer import (
     CancelarPedidoHandler,
     CierreDePedidoHandler,
+    WelcomeHandler,
     CartConfirmationHandler,
     ConfirmationHandler,
 )
@@ -398,6 +399,141 @@ class TestLoQueSeDiceQuedaGuardado:
             "turno lo piso"
         )
         assert guardado.get("history"), "el historial tambien tenia que guardarse"
+
+
+class TestComoEscribeLaGenteDeVerdad:
+    """
+    Frases enteras, con cortesias, como llegan por WhatsApp.
+
+    Este bloque existe por un fallo que llego a produccion. La regla decia "es
+    el pedido entero" solo si **todas** las palabras sobrantes estaban en una
+    lista corta (pedido, orden, todo...). Cualquier cortesia la rompia:
+
+        cliente > quiero cancelar todo y comenzar de nuevo la orden
+        bot     > No encontre "quiero todo y comenzar nuevo orden" en tu carrito
+
+    Fallaba hasta "quiero cancelar mi pedido". Las pruebas de entonces pasaban
+    porque las escribi telegraficas -- probaban mis suposiciones, no como
+    escribe la gente. De ahi que este bloque use frases largas a proposito.
+    """
+
+    CARRITO_DOS = [
+        {"product_id": "p-1", "name": "Hamburguesa", "price": 10.0, "quantity": 1},
+        {"product_id": "p-2", "name": "Papas", "price": 4.5, "quantity": 1},
+    ]
+
+    def _sesion(self):
+        return estado_pedido.a_session_data(
+            estado_pedido.añadir(estado_pedido.EstadoPedido(), self.CARRITO_DOS)
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mensaje", [
+        "quiero cancelar todo y comenzar de nuevo la orden",   # la de produccion
+        "quiero cancelar mi pedido",
+        "mejor cancela todo por favor",
+        "cancela todo",
+        "cancelar",
+        "por favor cancelame la orden completa",
+        "ya no quiero nada, cancela el pedido",
+    ])
+    async def test_estas_frases_cancelan_el_pedido_entero(self, mensaje):
+        handler = CancelarPedidoHandler(MagicMock())
+        handler.update_session_state = AsyncMock()
+
+        respuesta = await handler.handle(_datos(mensaje, self._sesion()))
+
+        assert respuesta == t("order.cancelled", "es"), (
+            f"{mensaje!r} no se entendio como cancelar el pedido"
+        )
+        estado, guardado = handler.update_session_state.await_args.args[1:3]
+        assert guardado["cart"] == []
+        assert estado == "initial"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mensaje,queda", [
+        ("cancela las papas", "Hamburguesa"),
+        ("quitame las papas por favor", "Hamburguesa"),
+        # Lleva la palabra "pedido", pero nombra un producto: se le pregunta
+        # antes al carrito que a la lista de palabras. Quitar una linea es
+        # recuperable; vaciar el pedido, no.
+        ("cancela las papas del pedido", "Hamburguesa"),
+    ])
+    async def test_estas_solo_quitan_lo_que_nombran(self, mensaje, queda):
+        handler = CancelarPedidoHandler(MagicMock())
+        handler.update_session_state = AsyncMock()
+
+        await handler.handle(_datos(mensaje, self._sesion()))
+
+        guardado = handler.update_session_state.await_args.args[2]
+        assert [i["name"] for i in guardado["cart"]] == [queda], (
+            f"{mensaje!r} se llevo por delante lo que el cliente no nombro"
+        )
+
+    @pytest.mark.asyncio
+    async def test_nombrar_algo_que_no_se_tiene_sigue_sin_borrar_nada(self):
+        handler = CancelarPedidoHandler(MagicMock())
+        handler.update_session_state = AsyncMock()
+
+        respuesta = await handler.handle(_datos("cancela la pizza", self._sesion()))
+
+        handler.update_session_state.assert_not_awaited()
+        assert "pizza" in respuesta
+
+
+class TestUnSaludoSeSaluda:
+    """
+    El cliente dijo "hola" con un pedido a medias y recibio el volcado del
+    pedido pendiente, sin saludo: WelcomeHandler exigia el estado `initial`, asi
+    que un cliente que vuelve nunca era saludado y su mensaje caia en la
+    respuesta por defecto.
+    """
+
+    @pytest.mark.asyncio
+    async def test_saluda_y_enseña_lo_que_lleva(self):
+        handler = WelcomeHandler(MagicMock())
+        handler.update_session_state = AsyncMock()
+        sesion = estado_pedido.a_session_data(
+            estado_pedido.añadir(estado_pedido.EstadoPedido(), CARRITO)
+        )
+        datos = _datos("hola", sesion)
+        datos["tenant_name"] = "Mi Tienda"
+
+        assert await handler.can_handle(datos)
+        respuesta = await handler.handle(datos)
+
+        assert t("welcome.default", "es", store_name="Mi Tienda") in respuesta
+        assert "Hamburguesa" in respuesta, "saluda pero no dice lo que lleva"
+
+    @pytest.mark.asyncio
+    async def test_saludar_no_mueve_la_conversacion_de_sitio(self):
+        """
+        `handle` escribia el estado `initial`. Con la conversacion en
+        `ordering`, eso dejaria al "si" siguiente sin poder cerrar el pedido:
+        CartConfirmationHandler solo acepta `viewing_cart` u `ordering`.
+        """
+        handler = WelcomeHandler(MagicMock())
+        handler.update_session_state = AsyncMock()
+        sesion = estado_pedido.a_session_data(
+            estado_pedido.añadir(estado_pedido.EstadoPedido(), CARRITO)
+        )
+        datos = _datos("hola", sesion, estado="ordering")
+        datos["tenant_name"] = "Mi Tienda"
+
+        await handler.handle(datos)
+
+        handler.update_session_state.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sin_pedido_saluda_como_siempre(self):
+        handler = WelcomeHandler(MagicMock())
+        handler.update_session_state = AsyncMock()
+        datos = _datos("hola", {}, estado="initial")
+        datos["tenant_name"] = "Mi Tienda"
+
+        respuesta = await handler.handle(datos)
+
+        assert t("welcome.options", "es") in respuesta
 
 
 class TestQuienReclamaCadaPalabra:
